@@ -1,6 +1,7 @@
 // ===== 设置 =====
 
 export type ApiMode = 'images' | 'responses'
+export type AppMode = 'gallery' | 'agent'
 export type BuiltInApiProvider = 'openai' | 'fal'
 export type ApiProvider = BuiltInApiProvider | string
 export type CustomProviderTemplate = 'http-image'
@@ -172,6 +173,52 @@ export interface TaskRecord {
   elapsed: number | null
   /** 是否收藏 */
   isFavorite?: boolean
+  /** 来源模式：画廊 / Agent */
+  sourceMode?: AppMode
+  /** Agent 对话 ID */
+  agentConversationId?: string
+  /** Agent 轮次 ID */
+  agentRoundId?: string
+  /** Agent 消息 ID */
+  agentMessageId?: string
+}
+
+// ===== Agent 模式 =====
+
+export type AgentMessageRole = 'user' | 'assistant'
+export type AgentRoundStatus = 'running' | 'done' | 'error'
+
+export interface AgentMessage {
+  id: string
+  role: AgentMessageRole
+  content: string
+  roundId: string
+  inputImageIds?: string[]
+  outputTaskIds?: string[]
+  createdAt: number
+}
+
+export interface AgentRound {
+  id: string
+  index: number
+  userMessageId: string
+  assistantMessageId?: string
+  prompt: string
+  inputImageIds: string[]
+  outputTaskIds: string[]
+  status: AgentRoundStatus
+  error: string | null
+  createdAt: number
+  finishedAt: number | null
+}
+
+export interface AgentConversation {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  rounds: AgentRound[]
+  messages: AgentMessage[]
 }
 
 // ===== IndexedDB 存储的图片 =====
@@ -238,7 +285,13 @@ export interface ImageApiResponse {
 }
 
 export interface ResponsesOutputItem {
+  id?: string
   type?: string
+  status?: string
+  content?: Array<{
+    type?: string
+    text?: string
+  }>
   result?: string | {
     b64_json?: string
     image?: string
@@ -253,6 +306,7 @@ export interface ResponsesOutputItem {
 }
 
 export interface ResponsesApiResponse {
+  id?: string
   output?: ResponsesOutputItem[]
   tools?: Array<{
     type?: string
@@ -291,6 +345,7 @@ export interface ExportData {
   exportedAt: string
   settings?: AppSettings
   tasks?: TaskRecord[]
+  agentConversations?: AgentConversation[]
   /** imageId → 图片信息 */
   imageFiles?: Record<string, {
     path: string

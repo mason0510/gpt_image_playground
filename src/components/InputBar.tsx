@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useState, useMemo, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { useStore, submitTask, addImageFromFile, updateTaskInStore, removeMultipleTasks, getCachedImage, ensureImageCached } from '../store'
+import { useStore, submitTask, submitAgentMessage, addImageFromFile, updateTaskInStore, removeMultipleTasks, getCachedImage, ensureImageCached } from '../store'
 import { DEFAULT_PARAMS } from '../types'
 import { getActiveApiProfile, normalizeSettings } from '../lib/apiProfiles'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
@@ -271,8 +271,10 @@ function useIsMobile() {
 
 export default function InputBar() {
   const prompt = useStore((s) => s.prompt)
+  const appMode = useStore((s) => s.appMode)
   const setPrompt = useStore((s) => s.setPrompt)
   const inputImages = useStore((s) => s.inputImages)
+  const addInputImage = useStore((s) => s.addInputImage)
   const removeInputImage = useStore((s) => s.removeInputImage)
   const clearInputImages = useStore((s) => s.clearInputImages)
   const params = useStore((s) => s.params)
@@ -463,6 +465,13 @@ export default function InputBar() {
   ), [activeProfile.id, currentActiveProfile.id, settings])
   const hasSubmitApiConfig = Boolean(activeProfile.apiKey)
   const canSubmit = Boolean(prompt.trim() && hasSubmitApiConfig)
+  const submitCurrentMode = useCallback(() => {
+    if (appMode === 'agent') {
+      void submitAgentMessage()
+    } else {
+      void submitTask()
+    }
+  }, [appMode])
   const activeProvider = activeProfile.provider
   const isFalProvider = activeProvider === 'fal'
   const moderationDisabled = activeProfile.apiMode === 'responses' || isFalProvider
@@ -893,11 +902,11 @@ export default function InputBar() {
         if (e.shiftKey) {
           insertPromptTextAtSelection('\n')
         } else if (!isModifier) {
-          if (canSubmit) submitTask()
+          if (canSubmit) submitCurrentMode()
         }
       } else {
         if (isModifier) {
-          if (canSubmit) submitTask()
+          if (canSubmit) submitCurrentMode()
         } else {
           insertPromptTextAtSelection('\n')
         }
@@ -985,6 +994,28 @@ export default function InputBar() {
       const files = e.dataTransfer?.files
       if (files && files.length > 0) {
         handleFilesRef.current(files)
+        return
+      }
+
+      const transferredText = e.dataTransfer?.getData('text/plain')
+      
+      const imageIds = transferredText?.startsWith('agent-images:') 
+        ? transferredText.slice('agent-images:'.length).split(',') 
+        : transferredText?.startsWith('agent-image:')
+        ? [transferredText.slice('agent-image:'.length)]
+        : []
+
+      if (imageIds.length > 0) {
+        Promise.all(imageIds.map(async (imageId) => {
+          const dataUrl = await ensureImageCached(imageId)
+          if (!dataUrl) {
+            showToast('部分图片已不存在', 'error')
+            return
+          }
+          addInputImage({ id: imageId, dataUrl })
+        })).then(() => {
+          showToast(`已添加到参考图`, 'success')
+        }).catch((err) => showToast(`添加参考图失败：${err instanceof Error ? err.message : String(err)}`, 'error'))
       }
     }
 
@@ -999,7 +1030,7 @@ export default function InputBar() {
       document.removeEventListener('dragleave', handleDragLeave)
       document.removeEventListener('drop', handleDrop)
     }
-  }, [])
+  }, [addInputImage, showToast])
 
   const adjustTextareaHeight = useCallback(() => {
     const el = textareaRef.current
@@ -1869,7 +1900,7 @@ export default function InputBar() {
                 >
                   <ButtonTooltip visible={!hasSubmitApiConfig && submitHover} text="尚未完成 API 配置，请在右上角设置中进行" />
                   <button
-                    onClick={() => hasSubmitApiConfig ? submitTask() : setShowSettings(true)}
+                    onClick={() => hasSubmitApiConfig ? submitCurrentMode() : setShowSettings(true)}
                     disabled={hasSubmitApiConfig ? !canSubmit : false}
                     className={`p-2.5 rounded-xl transition-all shadow-sm hover:shadow ${
                       !hasSubmitApiConfig
@@ -1923,7 +1954,7 @@ export default function InputBar() {
                 >
                   <ButtonTooltip visible={!hasSubmitApiConfig && submitHover} text="尚未完成 API 配置，请在右上角设置中进行" />
                   <button
-                    onClick={() => hasSubmitApiConfig ? submitTask() : setShowSettings(true)}
+                    onClick={() => hasSubmitApiConfig ? submitCurrentMode() : setShowSettings(true)}
                     disabled={hasSubmitApiConfig ? !canSubmit : false}
                     className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all shadow-sm ${
                       !hasSubmitApiConfig

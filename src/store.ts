@@ -1,8 +1,12 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type {
+  AgentConversation,
+  AgentMessage,
+  AgentRound,
   ApiProfile,
   AppSettings,
+  AppMode,
   TaskParams,
   InputImage,
   MaskDraft,
@@ -10,7 +14,7 @@ import type {
   ExportData,
 } from './types'
 import { DEFAULT_PARAMS } from './types'
-import { DEFAULT_SETTINGS, getActiveApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
+import { DEFAULT_IMAGES_MODEL, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, getActiveApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { remapImageMentionsForOrder, replaceImageMentionsForApi } from './lib/promptImageMentions'
 import {
@@ -31,6 +35,7 @@ import {
   storeImage,
 } from './lib/db'
 import { callImageApi } from './lib/api'
+import { callAgentResponsesApi, type AgentApiMessage } from './lib/agentApi'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
@@ -306,6 +311,32 @@ function maybeOpenSupportPrompt(previousTasks: TaskRecord[], nextTasks: TaskReco
   }
 }
 
+function normalizeAgentConversations(value: unknown): AgentConversation[] {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .filter((item): item is AgentConversation => Boolean(item) && typeof item === 'object' && typeof (item as AgentConversation).id === 'string')
+    .map((conversation) => ({
+      id: conversation.id,
+      title: typeof conversation.title === 'string' && conversation.title.trim() ? conversation.title : '新对话',
+      createdAt: typeof conversation.createdAt === 'number' ? conversation.createdAt : Date.now(),
+      updatedAt: typeof conversation.updatedAt === 'number' ? conversation.updatedAt : Date.now(),
+      rounds: Array.isArray(conversation.rounds) ? conversation.rounds : [],
+      messages: Array.isArray(conversation.messages) ? conversation.messages : [],
+    }))
+}
+
+function createAgentConversation(now = Date.now()): AgentConversation {
+  return {
+    id: genId(),
+    title: '新对话',
+    createdAt: now,
+    updatedAt: now,
+    rounds: [],
+    messages: [],
+  }
+}
+
 export function getPersistedState(state: AppState) {
   const settings = normalizeSettings(state.settings)
   return {
@@ -318,6 +349,12 @@ export function getPersistedState(state: AppState) {
         }
       : {}),
     dismissedCodexCliPrompts: state.dismissedCodexCliPrompts,
+    appMode: state.appMode,
+    agentConversations: state.agentConversations,
+    activeAgentConversationId: state.activeAgentConversationId,
+    agentSidebarCollapsed: state.agentSidebarCollapsed,
+    agentAssetTab: state.agentAssetTab,
+    agentAssetPanelCollapsed: state.agentAssetPanelCollapsed,
     supportPromptDismissed: state.supportPromptDismissed,
     supportPromptOpen: state.supportPromptOpen,
     supportPromptSkippedForImportedData: state.supportPromptSkippedForImportedData,
@@ -329,10 +366,21 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
 
   const persisted = persistedState as Partial<AppState>
   const settings = normalizeSettings(persisted.settings ?? currentState.settings)
+  const agentConversations = normalizeAgentConversations(persisted.agentConversations)
+  const activeAgentConversationId =
+    typeof persisted.activeAgentConversationId === 'string' && agentConversations.some((conversation) => conversation.id === persisted.activeAgentConversationId)
+      ? persisted.activeAgentConversationId
+      : agentConversations[0]?.id ?? null
   return {
     ...currentState,
     ...persisted,
     settings,
+    appMode: persisted.appMode === 'agent' ? 'agent' : 'gallery',
+    agentConversations,
+    activeAgentConversationId,
+    agentSidebarCollapsed: Boolean(persisted.agentSidebarCollapsed),
+    agentAssetTab: persisted.agentAssetTab === 'references' ? 'references' : 'outputs',
+    agentAssetPanelCollapsed: Boolean(persisted.agentAssetPanelCollapsed),
     supportPromptDismissed: Boolean(persisted.supportPromptDismissed),
     supportPromptOpen: Boolean(persisted.supportPromptOpen),
     supportPromptSkippedForImportedData: Boolean(persisted.supportPromptSkippedForImportedData),
@@ -344,6 +392,10 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
 // ===== Store 类型 =====
 
 interface AppState {
+  // 模式
+  appMode: AppMode
+  setAppMode: (mode: AppMode) => void
+
   // 设置
   settings: AppSettings
   setSettings: (s: Partial<AppSettings>) => void
@@ -372,6 +424,20 @@ interface AppState {
   reusedTaskApiProfileName: string | null
   reusedTaskApiProfileMissing: boolean
   setReusedTaskApiProfile: (profileId: string | null, missing?: boolean, profileName?: string | null) => void
+
+  // Agent
+  agentConversations: AgentConversation[]
+  activeAgentConversationId: string | null
+  agentSidebarCollapsed: boolean
+  agentAssetTab: 'references' | 'outputs'
+  agentAssetPanelCollapsed: boolean
+  createAgentConversation: () => string
+  setActiveAgentConversationId: (id: string | null) => void
+  renameAgentConversation: (id: string, title: string) => void
+  deleteAgentConversation: (id: string) => void
+  setAgentSidebarCollapsed: (collapsed: boolean) => void
+  setAgentAssetTab: (tab: 'references' | 'outputs') => void
+  setAgentAssetPanelCollapsed: (collapsed: boolean) => void
 
   // 任务列表
   tasks: TaskRecord[]
@@ -429,6 +495,58 @@ interface AppState {
 export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
+      // Mode
+      appMode: 'gallery',
+      setAppMode: (appMode) => {
+        if (appMode === 'gallery') {
+          set({ appMode })
+          return
+        }
+
+        const state = get()
+        const settings = normalizeSettings(state.settings)
+        const activeProfile = getActiveApiProfile(settings)
+
+        if (activeProfile.provider === 'openai' && activeProfile.apiMode === 'responses') {
+          set({ appMode: 'agent' })
+          return
+        }
+
+        if (activeProfile.provider === 'openai') {
+          state.setConfirmDialog({
+            title: 'Agent 模式需要 Responses API',
+            message: `当前 API 配置「${activeProfile.name}」不是 Responses API。是否将该配置切换为 Responses API 后进入 Agent 模式？`,
+            confirmText: '切换并进入',
+            cancelText: '取消',
+            action: () => {
+              const latestSettings = normalizeSettings(useStore.getState().settings)
+              const nextProfiles = latestSettings.profiles.map((profile) =>
+                profile.id === latestSettings.activeProfileId
+                  ? {
+                      ...profile,
+                      apiMode: 'responses' as const,
+                      model: profile.model === DEFAULT_IMAGES_MODEL ? DEFAULT_RESPONSES_MODEL : profile.model,
+                    }
+                  : profile,
+              )
+              useStore.getState().setSettings({ profiles: nextProfiles })
+              useStore.setState({ appMode: 'agent' })
+            },
+          })
+          return
+        }
+
+        state.setConfirmDialog({
+          title: 'Agent 模式需要 Responses API',
+          message: `当前服务商「${activeProfile.name}」不能用于 Agent 模式。请在设置中添加或切换到 OpenAI Responses API 配置。`,
+          confirmText: '打开设置',
+          cancelText: '取消',
+          action: () => {
+            useStore.getState().setShowSettings(true)
+          },
+        })
+      },
+
       // Settings
       settings: { ...DEFAULT_SETTINGS },
       setSettings: (s) => set((st) => {
@@ -561,6 +679,39 @@ export const useStore = create<AppState>()(
         reusedTaskApiProfileName: profileName,
         reusedTaskApiProfileMissing: missing,
       }),
+
+      // Agent
+      agentConversations: [],
+      activeAgentConversationId: null,
+      agentSidebarCollapsed: false,
+      agentAssetTab: 'outputs',
+      agentAssetPanelCollapsed: false,
+      createAgentConversation: () => {
+        const conversation = createAgentConversation()
+        set((s) => ({
+          agentConversations: [conversation, ...s.agentConversations],
+          activeAgentConversationId: conversation.id,
+        }))
+        return conversation.id
+      },
+      setActiveAgentConversationId: (activeAgentConversationId) => set({ activeAgentConversationId }),
+      renameAgentConversation: (id, title) => set((s) => ({
+        agentConversations: s.agentConversations.map((conversation) =>
+          conversation.id === id
+            ? { ...conversation, title: title.trim() || '新对话', updatedAt: Date.now() }
+            : conversation,
+        ),
+      })),
+      deleteAgentConversation: (id) => set((s) => {
+        const agentConversations = s.agentConversations.filter((conversation) => conversation.id !== id)
+        return {
+          agentConversations,
+          activeAgentConversationId: s.activeAgentConversationId === id ? agentConversations[0]?.id ?? null : s.activeAgentConversationId,
+        }
+      }),
+      setAgentSidebarCollapsed: (agentSidebarCollapsed) => set({ agentSidebarCollapsed }),
+      setAgentAssetTab: (agentAssetTab) => set({ agentAssetTab }),
+      setAgentAssetPanelCollapsed: (agentAssetPanelCollapsed) => set({ agentAssetPanelCollapsed }),
 
       // Tasks
       tasks: [],
@@ -1051,7 +1202,13 @@ export async function initStore() {
   // 收集所有任务引用的图片 id
   const referencedIds = new Set<string>()
   const persistedInputImages = useStore.getState().inputImages
+  const agentConversations = useStore.getState().agentConversations
   for (const img of persistedInputImages) referencedIds.add(img.id)
+  for (const conversation of agentConversations) {
+    for (const round of conversation.rounds) {
+      for (const id of round.inputImageIds) referencedIds.add(id)
+    }
+  }
   for (const t of tasks) {
     for (const id of t.inputImageIds || []) referencedIds.add(id)
     if (t.maskImageId) referencedIds.add(t.maskImageId)
@@ -1207,6 +1364,294 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
 
   // 异步调用 API
   executeTask(taskId)
+}
+
+function getActiveAgentConversation(): AgentConversation {
+  const state = useStore.getState()
+  const existing = state.agentConversations.find((conversation) => conversation.id === state.activeAgentConversationId)
+  if (existing) return existing
+
+  const id = state.createAgentConversation()
+  return useStore.getState().agentConversations.find((conversation) => conversation.id === id)!
+}
+
+function updateAgentConversation(conversationId: string, updater: (conversation: AgentConversation) => AgentConversation) {
+  useStore.setState((state) => ({
+    agentConversations: state.agentConversations.map((conversation) =>
+      conversation.id === conversationId ? updater(conversation) : conversation,
+    ),
+  }))
+}
+
+function collectAgentRoundOutputImages(round: AgentRound, tasks: TaskRecord[]) {
+  const images: string[] = []
+  for (const taskId of round.outputTaskIds) {
+    const task = tasks.find((item) => item.id === taskId)
+    if (task) images.push(...task.outputImages)
+  }
+  return images
+}
+
+function resolveAgentPromptImageReferences(prompt: string, conversation: AgentConversation, tasks: TaskRecord[]) {
+  const refs: string[] = []
+  const re = /@(?:第)?(\d+)轮图(\d+)/g
+  for (const match of prompt.matchAll(re)) {
+    const roundIndex = Number(match[1]) - 1
+    const imageIndex = Number(match[2]) - 1
+    const round = conversation.rounds[roundIndex]
+    if (!round || imageIndex < 0) continue
+    const images = collectAgentRoundOutputImages(round, tasks)
+    const imageId = images[imageIndex]
+    if (imageId) refs.push(imageId)
+  }
+  return refs
+}
+
+function uniqueIds(ids: string[]) {
+  return Array.from(new Set(ids.filter(Boolean)))
+}
+
+function addAgentReferencedImageIds(target: Set<string>, conversations = useStore.getState().agentConversations) {
+  for (const conversation of conversations) {
+    for (const round of conversation.rounds) {
+      for (const id of round.inputImageIds) target.add(id)
+    }
+  }
+}
+
+async function readAgentImageDataUrls(ids: string[]) {
+  const dataUrls: string[] = []
+  for (const id of ids) {
+    const dataUrl = await ensureImageCached(id)
+    if (dataUrl) dataUrls.push(dataUrl)
+  }
+  return dataUrls
+}
+
+async function buildAgentApiMessages(conversation: AgentConversation, tasks: TaskRecord[]): Promise<AgentApiMessage[]> {
+  const roundsById = new Map(conversation.rounds.map((round) => [round.id, round]))
+  const messages: AgentApiMessage[] = []
+
+  for (const message of conversation.messages) {
+    const round = roundsById.get(message.roundId)
+    if (message.role === 'user') {
+      messages.push({
+        role: 'user',
+        text: message.content,
+        imageDataUrls: round ? await readAgentImageDataUrls(round.inputImageIds) : [],
+      })
+      continue
+    }
+
+    const outputImages = round ? collectAgentRoundOutputImages(round, tasks) : []
+    const removedOutputTaskCount = round ? round.outputTaskIds.filter((taskId) => !tasks.some((task) => task.id === taskId)).length : 0
+    const imageSummary = outputImages.length > 0
+      ? `\n[Generated images in this turn: ${outputImages.map((_, index) => `round ${round?.index ?? '?'} image ${index + 1}`).join(', ')}]`
+      : removedOutputTaskCount > 0
+      ? '\n[Generated image removed]'
+      : ''
+
+    messages.push({
+      role: 'assistant',
+      text: `${message.content || ''}${imageSummary}`.trim() || '[No text response]',
+    })
+  }
+
+  return messages
+}
+
+export async function submitAgentMessage() {
+  const state = useStore.getState()
+  const { settings, prompt, inputImages, params, showToast } = state
+  const normalizedSettings = normalizeSettings(settings)
+  const activeProfile = getActiveApiProfile(normalizedSettings)
+
+  if (activeProfile.provider !== 'openai' || activeProfile.apiMode !== 'responses') {
+    state.setAppMode('agent')
+    return
+  }
+
+  if (validateApiProfile(activeProfile)) {
+    showToast(`请先完善请求 API 配置：${validateApiProfile(activeProfile)}`, 'error')
+    state.setShowSettings(true)
+    return
+  }
+
+  const trimmedPrompt = prompt.trim()
+  if (!trimmedPrompt) {
+    showToast('请输入消息', 'error')
+    return
+  }
+
+  const conversation = getActiveAgentConversation()
+  const referencedIds = resolveAgentPromptImageReferences(trimmedPrompt, conversation, state.tasks)
+  const inputImageIds = uniqueIds([...inputImages.map((image) => image.id), ...referencedIds])
+
+  for (const image of inputImages) {
+    await storeImage(image.dataUrl)
+  }
+
+  const requestSettings = createSettingsForApiProfile(normalizedSettings, activeProfile)
+  const normalizedParams = normalizeParamsForSettings(params, requestSettings, { hasInputImages: inputImageIds.length > 0 })
+  const now = Date.now()
+  const roundId = genId()
+  const userMessageId = genId()
+  const round: AgentRound = {
+    id: roundId,
+    index: conversation.rounds.length + 1,
+    userMessageId,
+    prompt: trimmedPrompt,
+    inputImageIds,
+    outputTaskIds: [],
+    status: 'running',
+    error: null,
+    createdAt: now,
+    finishedAt: null,
+  }
+  const userMessage: AgentMessage = {
+    id: userMessageId,
+    role: 'user',
+    content: trimmedPrompt,
+    roundId,
+    inputImageIds,
+    createdAt: now,
+  }
+
+  updateAgentConversation(conversation.id, (current) => ({
+    ...current,
+    title: current.rounds.length === 0 ? trimmedPrompt.slice(0, 40) || current.title : current.title,
+    updatedAt: now,
+    rounds: [...current.rounds, round],
+    messages: [...current.messages, userMessage],
+  }))
+
+  state.setPrompt('')
+  state.clearInputImages()
+  state.clearMaskDraft()
+
+  void executeAgentRound(conversation.id, roundId, normalizedParams, requestSettings, activeProfile)
+}
+
+async function executeAgentRound(
+  conversationId: string,
+  roundId: string,
+  params: TaskParams,
+  requestSettings: AppSettings,
+  activeProfile: ApiProfile,
+) {
+  const startedAt = Date.now()
+  try {
+    const latestState = useStore.getState()
+    const conversation = latestState.agentConversations.find((item) => item.id === conversationId)
+    if (!conversation) return
+
+    const apiMessages = await buildAgentApiMessages(conversation, latestState.tasks)
+    const result = await callAgentResponsesApi({
+      settings: requestSettings,
+      profile: activeProfile,
+      params,
+      messages: apiMessages,
+    })
+
+    const assistantMessageId = genId()
+    const outputIds: string[] = []
+    for (const image of result.images) {
+      const imgId = await storeImage(image.dataUrl, 'generated')
+      cacheImage(imgId, image.dataUrl)
+      outputIds.push(imgId)
+    }
+
+    const taskIds: string[] = []
+    if (outputIds.length > 0) {
+      const taskId = genId()
+      const round = conversation.rounds.find((item) => item.id === roundId)
+      const revisedPromptByImage = result.images.reduce<Record<string, string>>((acc, image, index) => {
+        const imageId = outputIds[index]
+        if (imageId && image.revisedPrompt) acc[imageId] = image.revisedPrompt
+        return acc
+      }, {})
+      const task: TaskRecord = {
+        id: taskId,
+        prompt: round?.prompt ?? apiMessages[apiMessages.length - 1]?.text ?? '',
+        params,
+        apiProvider: activeProfile.provider,
+        apiProfileId: activeProfile.id,
+        apiProfileName: activeProfile.name,
+        apiModel: activeProfile.model,
+        inputImageIds: round?.inputImageIds ?? [],
+        maskTargetImageId: null,
+        maskImageId: null,
+        outputImages: outputIds,
+        actualParams: { n: outputIds.length },
+        revisedPromptByImage: Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
+        rawResponsePayload: result.rawResponsePayload,
+        status: 'done',
+        error: null,
+        createdAt: startedAt,
+        finishedAt: Date.now(),
+        elapsed: Date.now() - startedAt,
+        sourceMode: 'agent',
+        agentConversationId: conversationId,
+        agentRoundId: roundId,
+        agentMessageId: assistantMessageId,
+      }
+      const latestTasks = useStore.getState().tasks
+      useStore.getState().setTasks([task, ...latestTasks])
+      await putTask(task)
+      taskIds.push(taskId)
+    }
+
+    const assistantMessage: AgentMessage = {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: result.text || (outputIds.length > 0 ? 'Generated image.' : ''),
+      roundId,
+      outputTaskIds: taskIds,
+      createdAt: Date.now(),
+    }
+
+    updateAgentConversation(conversationId, (current) => ({
+      ...current,
+      updatedAt: Date.now(),
+      rounds: current.rounds.map((round) =>
+        round.id === roundId
+          ? {
+              ...round,
+              assistantMessageId,
+              outputTaskIds: taskIds,
+              status: 'done',
+              error: null,
+              finishedAt: Date.now(),
+            }
+          : round,
+      ),
+      messages: [...current.messages, assistantMessage],
+    }))
+
+    useStore.getState().showToast(outputIds.length > 0 ? `Agent 已生成 ${outputIds.length} 张图片` : 'Agent 已回复', 'success')
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    updateAgentConversation(conversationId, (current) => ({
+      ...current,
+      updatedAt: Date.now(),
+      rounds: current.rounds.map((round) =>
+        round.id === roundId
+          ? { ...round, status: 'error', error: message, finishedAt: Date.now() }
+          : round,
+      ),
+      messages: [
+        ...current.messages,
+        {
+          id: genId(),
+          role: 'assistant',
+          content: `请求失败：${message}`,
+          roundId,
+          createdAt: Date.now(),
+        },
+      ],
+    }))
+    useStore.getState().showToast(`Agent 请求失败：${message}`, 'error')
+  }
 }
 
 async function executeTask(taskId: string) {
@@ -1553,6 +1998,7 @@ export async function removeMultipleTasks(taskIds: string[]) {
     if (t.maskImageId) stillUsed.add(t.maskImageId)
     for (const id of t.outputImages || []) stillUsed.add(id)
   }
+  addAgentReferencedImageIds(stillUsed)
   for (const img of inputImages) stillUsed.add(img.id)
 
   // 删除孤立图片
@@ -1596,6 +2042,7 @@ export async function removeTask(task: TaskRecord) {
     if (t.maskImageId) stillUsed.add(t.maskImageId)
     for (const id of t.outputImages || []) stillUsed.add(id)
   }
+  addAgentReferencedImageIds(stillUsed)
   for (const img of inputImages) stillUsed.add(img.id)
 
   // 删除孤立图片
@@ -1627,7 +2074,12 @@ export async function clearData(options: ClearOptions = { clearConfig: true, cle
     thumbnailCache.clear()
     thumbnailBackfillIds.clear()
     setTasks([])
-    useStore.setState({ supportPromptOpen: false, supportPromptSkippedForImportedData: false })
+    useStore.setState({
+      agentConversations: [],
+      activeAgentConversationId: null,
+      supportPromptOpen: false,
+      supportPromptSkippedForImportedData: false,
+    })
     clearInputImages()
     clearMaskDraft()
   }
@@ -1733,7 +2185,7 @@ export async function exportData(options: ExportOptions = { exportConfig: true, 
   try {
     const tasks = options.exportTasks ? await getAllTasks() : []
     const images = options.exportTasks ? await getAllImages() : []
-    const { settings } = useStore.getState()
+    const { settings, agentConversations } = useStore.getState()
     const exportedAt = Date.now()
     const imageCreatedAtFallback = new Map<string, number>()
 
@@ -1801,6 +2253,7 @@ export async function exportData(options: ExportOptions = { exportConfig: true, 
     if (options.exportConfig) manifest.settings = settings
     if (options.exportTasks) {
       manifest.tasks = tasks
+      manifest.agentConversations = agentConversations
       manifest.imageFiles = imageFiles
       manifest.thumbnailFiles = thumbnailFiles
     }
@@ -1887,6 +2340,11 @@ export async function importData(file: File, options: ImportOptions = { importCo
 
       const tasks = await getAllTasks()
       useStore.getState().setTasks(tasks)
+      const agentConversations = normalizeAgentConversations(data.agentConversations)
+      useStore.setState({
+        agentConversations,
+        activeAgentConversationId: agentConversations[0]?.id ?? null,
+      })
       skipSupportPromptForImportedData(tasks)
       scheduleThumbnailBackfill(importedImageIds)
     }
