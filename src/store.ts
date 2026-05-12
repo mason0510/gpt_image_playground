@@ -376,6 +376,8 @@ interface AppState {
   // 任务列表
   tasks: TaskRecord[]
   setTasks: (t: TaskRecord[]) => void
+  streamPreviews: Record<string, string>
+  setTaskStreamPreview: (taskId: string, image?: string) => void
 
   // 搜索和筛选
   searchQuery: string
@@ -441,7 +443,8 @@ export const useStore = create<AppState>()(
           incoming.timeout !== undefined ||
           incoming.apiMode !== undefined ||
           incoming.codexCli !== undefined ||
-          incoming.apiProxy !== undefined
+          incoming.apiProxy !== undefined ||
+          incoming.streamImages !== undefined
         const merged = normalizeSettings({ ...previous, ...incoming })
         if (hasLegacyOverrides && incoming.profiles === undefined) {
           merged.profiles = merged.profiles.map((profile) =>
@@ -455,6 +458,7 @@ export const useStore = create<AppState>()(
                   apiMode: incoming.apiMode === 'images' || incoming.apiMode === 'responses' ? incoming.apiMode : profile.apiMode,
                   codexCli: incoming.codexCli ?? profile.codexCli,
                   apiProxy: incoming.apiProxy ?? profile.apiProxy,
+                  streamImages: incoming.streamImages ?? profile.streamImages,
                 }
               : profile,
           )
@@ -570,6 +574,18 @@ export const useStore = create<AppState>()(
           ? { supportPromptSkippedForImportedData: false }
           : {}),
       })),
+      streamPreviews: {},
+      setTaskStreamPreview: (taskId, image) => set((s) => {
+        if (image) {
+          if (s.streamPreviews[taskId] === image) return s
+          return { streamPreviews: { ...s.streamPreviews, [taskId]: image } }
+        }
+
+        if (!(taskId in s.streamPreviews)) return s
+        const next = { ...s.streamPreviews }
+        delete next[taskId]
+        return { streamPreviews: next }
+      }),
 
       // Search & Filter
       searchQuery: '',
@@ -1274,10 +1290,16 @@ async function executeTask(taskId: string) {
           customRecoverable: false,
         })
       },
+      onPartialImage: (partial) => {
+        useStore.getState().setTaskStreamPreview(taskId, partial.image)
+      },
     })
 
     const latestBeforeSuccess = useStore.getState().tasks.find((t) => t.id === taskId)
-    if (!latestBeforeSuccess || latestBeforeSuccess.status !== 'running') return
+    if (!latestBeforeSuccess || latestBeforeSuccess.status !== 'running') {
+      useStore.getState().setTaskStreamPreview(taskId)
+      return
+    }
 
     // 存储输出图片
     const outputIds: string[] = []
@@ -1318,8 +1340,12 @@ async function executeTask(taskId: string) {
 
     // 更新任务
     const latestBeforeUpdate = useStore.getState().tasks.find((t) => t.id === taskId)
-    if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') return
+    if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') {
+      useStore.getState().setTaskStreamPreview(taskId)
+      return
+    }
     clearOpenAIWatchdogTimer(taskId)
+    useStore.getState().setTaskStreamPreview(taskId)
     updateTaskInStore(taskId, {
       outputImages: outputIds,
       rawImageUrls: result.rawImageUrls?.length ? result.rawImageUrls : undefined,
@@ -1347,6 +1373,7 @@ async function executeTask(taskId: string) {
     clearOpenAIWatchdogTimer(taskId)
     const latestTask = useStore.getState().tasks.find((t) => t.id === taskId) ?? task
     if (latestTask.status !== 'running') return
+    useStore.getState().setTaskStreamPreview(taskId)
     const latestFalRequestInfo = falRequestInfo ?? (latestTask.falRequestId && latestTask.falEndpoint
       ? { requestId: latestTask.falRequestId, endpoint: latestTask.falEndpoint }
       : null)

@@ -164,7 +164,8 @@ function isPristineNewOpenAIProfile(profile: ApiProfile) {
     profile.timeout === DEFAULT_SETTINGS.timeout &&
     profile.apiMode === 'images' &&
     profile.codexCli === false &&
-    profile.apiProxy === defaultProfile.apiProxy
+    profile.apiProxy === defaultProfile.apiProxy &&
+    profile.streamImages === defaultProfile.streamImages
 }
 
 function getImportedProfileFromMergedSettings(
@@ -484,6 +485,7 @@ export default function SettingsModal() {
         timeout: Number(profile.timeout) || DEFAULT_SETTINGS.timeout,
         apiProxy: profile.provider === 'openai' && apiProxyAvailable ? (apiProxyLocked || profile.apiProxy) : false,
         codexCli: profile.provider === 'openai' ? profile.codexCli : false,
+        streamImages: profile.provider === 'openai' ? profile.streamImages : false,
       }
     })
     const fallbackProfile = createDefaultOpenAIProfile({ id: newId('openai') })
@@ -523,6 +525,7 @@ export default function SettingsModal() {
       const model = profile.model.trim() || getDefaultModelForMode(profile.apiMode)
       url.searchParams.set('model', !options.includeApiKey && options.useNewApiModel ? '{model}' : model)
       if (profile.codexCli) url.searchParams.set('codexCli', 'true')
+      if (profile.streamImages) url.searchParams.set('streamImages', 'true')
 
       let result = url.toString()
       if (!options.includeApiKey) {
@@ -1520,6 +1523,27 @@ export default function SettingsModal() {
                   />
                   <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
                     支持通过查询参数覆盖：<code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">apiMode=images</code> 或 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">apiMode=responses</code>。
+                  </div>
+                </div>
+              )}
+
+              {activeProfile.provider === 'openai' && (
+                <div className="block">
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">流式图片预览</span>
+                    <button
+                      type="button"
+                      onClick={() => updateActiveProfile({ streamImages: !activeProfile.streamImages }, true)}
+                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${activeProfile.streamImages ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+                      role="switch"
+                      aria-checked={!!activeProfile.streamImages}
+                      aria-label="流式图片预览"
+                    >
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${activeProfile.streamImages ? 'translate-x-[14px]' : 'translate-x-[2px]'}`} />
+                    </button>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                    开启后请求会发送 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">stream: true</code> 和 <code className="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/[0.06]">partial_images: 2</code>，任务生成中会显示部分图片预览。
                   </div>
                 </div>
               )}

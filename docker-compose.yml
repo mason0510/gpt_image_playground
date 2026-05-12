@@ -1,0 +1,9 @@
+services:
+  gpt-image-playground:
+    image: gpt-image-playground:latest
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      pull: true
+    restart: unless-stopped

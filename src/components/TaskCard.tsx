@@ -33,6 +33,7 @@ export default function TaskCard({
   const [swipeActionActive, setSwipeActionActive] = useState(false)
   const toggleTaskSelection = useStore((s) => s.toggleTaskSelection)
   const settings = useStore((s) => s.settings)
+  const streamPreviewSrc = useStore((s) => s.streamPreviews[task.id] || '')
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
   const swipeResetTimerRef = useRef<number | null>(null)
   const suppressClickUntilRef = useRef(0)
@@ -265,7 +266,19 @@ export default function TaskCard({
       <div className="flex h-40">
         {/* 左侧图片区域 */}
         <div className="w-40 min-w-[10rem] h-full bg-gray-100 dark:bg-black/20 relative flex items-center justify-center overflow-hidden flex-shrink-0">
-          {task.status === 'running' && (
+          {task.status === 'running' && streamPreviewSrc && (
+            <>
+              <img
+                src={streamPreviewSrc}
+                className="h-full w-full object-cover"
+                alt=""
+              />
+              <span className="absolute bottom-1 right-1 bg-blue-500/80 text-white text-xs px-1.5 py-0.5 rounded">
+                预览
+              </span>
+            </>
+          )}
+          {task.status === 'running' && !streamPreviewSrc && (
             <div className="flex flex-col items-center gap-2">
               <svg
                 className="w-8 h-8 text-blue-400 animate-spin"

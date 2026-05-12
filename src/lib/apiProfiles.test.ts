@@ -529,6 +529,21 @@ describe('custom providers', () => {
     expect(profile.model).toBe(DEFAULT_IMAGES_MODEL)
   })
 
+  it('enables streaming image previews by default for new OpenAI profiles while preserving explicit false', () => {
+    expect(createDefaultOpenAIProfile().streamImages).toBe(true)
+    expect(DEFAULT_SETTINGS.streamImages).toBe(true)
+    expect(DEFAULT_SETTINGS.profiles[0].streamImages).toBe(true)
+
+    const normalized = normalizeSettings({
+      profiles: [
+        createDefaultOpenAIProfile({ streamImages: false }),
+      ],
+    })
+
+    expect(normalized.streamImages).toBe(false)
+    expect(normalized.profiles[0].streamImages).toBe(false)
+  })
+
   it('restores OpenAI-compatible URL after switching through fal.ai', () => {
     const openaiProfile = createDefaultOpenAIProfile({
       baseUrl: 'https://api.compat.example.com/v1',
