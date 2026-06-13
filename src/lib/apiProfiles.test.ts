@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { LIMITED_FREE_API_KEY_SENTINEL } from './apiKeyMode'
 import {
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
+  DEFAULT_RESPONSES_MODEL,
   DEFAULT_SETTINGS,
   createDefaultOpenAIProfile,
   createDefaultFalProfile,
   findEquivalentApiProfile,
+  getActiveApiProfile,
+  getApiProviderLabel,
   importCustomProviderDefinitionFromJson,
   importCustomProviderSettingsFromJson,
   mergeImportedSettings,
@@ -18,9 +22,17 @@ import {
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
 })
 
 describe('validateApiProfile', () => {
+  it('requires API URL for fal profiles', () => {
+    expect(validateApiProfile(createDefaultFalProfile({
+      baseUrl: '',
+      apiKey: 'fal-key',
+    }))).toBe('缺少 API URL')
+  })
+
   it('allows empty API URL when API proxy is enabled and available', () => {
     vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
 
@@ -37,6 +49,161 @@ describe('validateApiProfile', () => {
       apiKey: 'test-key',
       apiProxy: true,
     }))).toBe('缺少 API URL')
+  })
+
+
+  it('defaults first-run OpenAI-compatible image generation to the limited-free key sentinel', () => {
+    const profile = createDefaultOpenAIProfile()
+
+    expect(profile.apiKey).toBe(LIMITED_FREE_API_KEY_SENTINEL)
+    expect(profile.apiMode).toBe('images')
+    expect(profile.model).toBe(DEFAULT_IMAGES_MODEL)
+    expect(DEFAULT_SETTINGS.apiKey).toBe(LIMITED_FREE_API_KEY_SENTINEL)
+    expect(DEFAULT_SETTINGS.profiles[0].apiKey).toBe(LIMITED_FREE_API_KEY_SENTINEL)
+  })
+
+  it('defaults built-in Responses profiles to the stable responses model', () => {
+    expect(createDefaultOpenAIProfile({
+      apiMode: 'responses',
+      apiKey: 'test-key',
+    }).model).toBe(DEFAULT_RESPONSES_MODEL)
+  })
+})
+
+describe('normalizeSettings api proxy migration', () => {
+  it('does not default to the official OpenAI URL when same-origin proxy is locked', async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
+    vi.stubEnv('VITE_API_PROXY_LOCKED', 'true')
+    vi.stubEnv('VITE_DEFAULT_API_URL', '')
+
+    const mod = await import('./apiProfiles')
+
+    expect(mod.DEFAULT_SETTINGS.baseUrl).toBe('')
+    expect(mod.createDefaultOpenAIProfile().baseUrl).toBe('')
+    expect(mod.DEFAULT_SETTINGS.profiles[0].baseUrl).toBe('')
+  })
+
+  it('auto-enables same-origin proxy for built-in OpenAI-compatible profiles that still point to a cross-origin API URL', () => {
+    vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'https://studio1.tap365.org',
+      },
+    })
+
+    const settings = normalizeSettings({
+      profiles: [
+        {
+          id: 'sublb-1',
+          name: 'SubLB',
+          provider: 'sublb',
+          baseUrl: 'https://sub-lb.tap365.org/v1',
+          apiKey: 'test-key',
+          model: DEFAULT_IMAGES_MODEL,
+          timeout: 300,
+          apiMode: 'responses',
+          codexCli: false,
+          apiProxy: false,
+        },
+      ],
+      activeProfileId: 'sublb-1',
+    })
+
+    expect(settings.profiles[0].apiProxy).toBe(true)
+  })
+
+  it.each(['gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'gpt-4o-mini'])(
+    'rewrites unstable built-in Responses model %s to gpt-5.5',
+    (model) => {
+      const settings = normalizeSettings({
+        profiles: [
+          {
+            id: 'sublb-1',
+            name: 'SubLB',
+            provider: 'sublb',
+            baseUrl: 'https://sub-lb.tap365.org/v1',
+            apiKey: 'test-key',
+            model,
+            timeout: 300,
+            apiMode: 'responses',
+            codexCli: false,
+            apiProxy: false,
+          },
+        ],
+        activeProfileId: 'sublb-1',
+      })
+
+      expect(settings.profiles[0].model).toBe(DEFAULT_RESPONSES_MODEL)
+      expect(settings.model).toBe(DEFAULT_RESPONSES_MODEL)
+    },
+  )
+
+  it('keeps built-in Responses fallback after stale top-level legacy overrides are re-applied', () => {
+    const activeProfile = getActiveApiProfile({
+      profiles: [
+        {
+          id: 'sublb-1',
+          name: 'SubLB',
+          provider: 'sublb',
+          baseUrl: 'https://sub-lb.tap365.org/v1',
+          apiKey: 'test-key',
+          model: DEFAULT_RESPONSES_MODEL,
+          timeout: 300,
+          apiMode: 'responses',
+          codexCli: false,
+          apiProxy: true,
+        },
+      ],
+      activeProfileId: 'sublb-1',
+      model: 'gpt-4.1-mini',
+      apiMode: 'responses',
+    })
+
+    expect(activeProfile.model).toBe(DEFAULT_RESPONSES_MODEL)
+  })
+
+  it('does not auto-enable same-origin proxy for custom providers', () => {
+    vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'https://studio1.tap365.org',
+      },
+    })
+
+    const settings = normalizeSettings({
+      customProviders: [
+        {
+          id: 'custom-http-image',
+          name: '自定义服务商',
+          template: 'http-image',
+          submit: {
+            path: 'images/generations',
+            method: 'POST',
+            contentType: 'json',
+            body: { prompt: '$prompt' },
+            result: { imageUrlPaths: ['data.*.url'], b64JsonPaths: [] },
+          },
+        },
+      ],
+      profiles: [
+        {
+          id: 'custom-1',
+          name: 'Custom',
+          provider: 'custom-http-image',
+          baseUrl: 'https://sub-lb.tap365.org/v1',
+          apiKey: 'test-key',
+          model: DEFAULT_IMAGES_MODEL,
+          timeout: 300,
+          apiMode: 'images',
+          codexCli: false,
+          apiProxy: false,
+        },
+      ],
+      activeProfileId: 'custom-1',
+    })
+
+    expect(settings.profiles[0].apiProxy).toBe(false)
   })
 })
 
@@ -202,7 +369,7 @@ describe('mergeImportedSettings', () => {
     expect(merged.activeProfileId).toBe(DEFAULT_OPENAI_PROFILE_ID)
     expect(merged.profiles[0]).toMatchObject({ apiKey: 'current-key', model: 'current-model' })
     expect(merged.profiles[1]).toMatchObject({ name: 'Imported OpenAI', provider: 'openai', apiKey: 'imported-key' })
-    expect(merged.profiles[2]).toMatchObject({ name: 'Imported fal', provider: 'fal', apiKey: 'fal-key' })
+    expect(merged.profiles[2]).toMatchObject({ name: 'Imported fal', provider: 'sublb', apiKey: 'fal-key', model: DEFAULT_IMAGES_MODEL })
     expect(new Set(merged.profiles.map((profile) => profile.id)).size).toBe(3)
   })
 
@@ -243,7 +410,7 @@ describe('mergeImportedSettings', () => {
 
     expect(merged.profiles).toHaveLength(2)
     expect(merged.profiles[0]).toMatchObject({ apiKey: 'current-key', model: 'current-model' })
-    expect(merged.profiles[1]).toMatchObject({ provider: 'fal', apiKey: 'fal-key', model: DEFAULT_FAL_MODEL })
+    expect(merged.profiles[1]).toMatchObject({ provider: 'sublb', apiKey: 'fal-key', model: DEFAULT_IMAGES_MODEL })
   })
 
   it('reuses an existing keyed profile when importing the same custom profile without an API key', () => {
@@ -568,9 +735,9 @@ describe('custom providers', () => {
       ],
     })
 
-    expect(normalized.streamImages).toBe(false)
+    expect(normalized.streamImages).toBe(true)
     expect(normalized.streamPartialImages).toBe(3)
-    expect(normalized.profiles[0].streamImages).toBe(false)
+    expect(normalized.profiles[0].streamImages).toBe(true)
     expect(normalized.profiles[0].streamPartialImages).toBe(3)
 
     const clamped = normalizeSettings({
@@ -602,5 +769,42 @@ describe('custom providers', () => {
     expect(restoredProfile.baseUrl).toBe('https://api.compat.example.com/v1')
     expect(restoredProfile.model).toBe('custom-openai-model')
     expect(restoredProfile.apiProxy).toBe(false)
+  })
+
+  it('keeps both OpenAI 兼容接口 and SubLB built-in providers', () => {
+    const openaiProfile = createDefaultOpenAIProfile()
+    const sublbProfile = switchApiProfileProvider(openaiProfile, 'sublb')
+    const restoredProfile = switchApiProfileProvider(sublbProfile, 'openai')
+
+    expect(getApiProviderLabel({}, 'openai')).toBe('OpenAI 兼容接口')
+    expect(getApiProviderLabel({}, 'sublb')).toBe('SubLB')
+    expect(sublbProfile.provider).toBe('sublb')
+    expect(sublbProfile.baseUrl).toBe(openaiProfile.baseUrl)
+    expect(restoredProfile.provider).toBe('openai')
+  })
+
+  it('migrates legacy fal profiles to SubLB when normalizing settings', () => {
+    const normalized = normalizeSettings({
+      profiles: [{
+        id: 'legacy-fal',
+        name: 'Legacy fal',
+        provider: 'fal',
+        baseUrl: 'https://proxy.example.com/',
+        apiKey: 'fal-key',
+        model: DEFAULT_FAL_MODEL,
+        timeout: 300,
+        apiMode: 'images',
+        codexCli: false,
+        apiProxy: false,
+      }],
+      activeProfileId: 'legacy-fal',
+    })
+
+    expect(normalized.profiles[0]).toMatchObject({
+      id: 'legacy-fal',
+      provider: 'sublb',
+      baseUrl: 'https://proxy.example.com',
+      model: DEFAULT_IMAGES_MODEL,
+    })
   })
 })

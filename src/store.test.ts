@@ -60,6 +60,8 @@ vi.mock('./lib/db', () => {
       images.clear()
       thumbnails.clear()
     },
+    hashDataUrl: async (dataUrl: string) => `mock-hash-${dataUrl.length}`,
+    getReducedStorageImageCandidates: async () => [],
     storeImage: async (dataUrl: string, source: StoredImage['source'] = 'upload') => {
       const id = `stored-image-${++imageSeq}`
       images.set(id, { id, dataUrl, source, createdAt: Date.now() })
@@ -95,7 +97,9 @@ vi.mock('./lib/agentApi', () => ({
     }
   }),
 }))
+import * as db from './lib/db'
 import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversations, getAllTasks, putAgentConversation, putImage, putTask as putDbTask } from './lib/db'
+import { callImageApi } from './lib/api'
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { cleanStaleAgentInputDrafts, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, submitAgentMessage, submitTask, useStore } from './store'
 
@@ -259,6 +263,98 @@ describe('mask draft lifecycle in store actions', () => {
     const state = useStore.getState()
     expect(state.tasks).toHaveLength(1)
     expect(state.showToast).toHaveBeenCalledWith('任务已提交', 'success')
+  })
+
+  it('falls back to reduced image storage before using volatile session memory', async () => {
+    vi.mocked(callImageApi).mockResolvedValueOnce({
+      images: ['data:image/png;base64,generated-image'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+    const storeImageSpy = vi.spyOn(db, 'storeImage')
+      .mockRejectedValueOnce(new Error('Quota exceeded'))
+      .mockResolvedValueOnce('stored-image-reduced')
+    vi.spyOn(db, 'getReducedStorageImageCandidates').mockResolvedValueOnce(['data:image/webp;base64,reduced-image'])
+
+    await submitTask()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const state = useStore.getState()
+    expect(state.tasks[0]).toMatchObject({
+      status: 'done',
+      error: null,
+      outputImages: ['stored-image-reduced'],
+    })
+    expect(state.showToast).not.toHaveBeenCalledWith(
+      '图片已生成，但本地存储失败，当前仅保存在本次页面会话内；刷新页面后可能丢失。',
+      'info',
+    )
+    storeImageSpy.mockRestore()
+  })
+
+  it('keeps the task successful with volatile fallback when reduced storage also fails', async () => {
+    vi.mocked(callImageApi).mockResolvedValueOnce({
+      images: ['data:image/png;base64,generated-image'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+    const storeImageSpy = vi.spyOn(db, 'storeImage').mockRejectedValue(new Error('Quota exceeded'))
+    vi.spyOn(db, 'getReducedStorageImageCandidates').mockResolvedValueOnce(['data:image/webp;base64,reduced-image'])
+
+    await submitTask()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const state = useStore.getState()
+    expect(state.tasks[0]).toMatchObject({
+      status: 'done',
+      error: null,
+      outputImages: [expect.stringMatching(/^volatile-image-/)],
+    })
+    expect(state.showToast).toHaveBeenCalledWith(
+      '图片已生成，但本地存储失败，当前仅保存在本次页面会话内；刷新页面后可能丢失。',
+      'info',
+    )
+    storeImageSpy.mockRestore()
+  })
+
+  it('waits for done-state persistence before exposing a successful task in memory state', async () => {
+    vi.mocked(callImageApi).mockResolvedValueOnce({
+      images: ['data:image/png;base64,generated-image'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+
+    let releaseDonePersist: (() => void) | undefined
+    const donePersisted = new Promise<void>((resolve) => {
+      releaseDonePersist = () => resolve()
+    })
+    const putTaskSpy = vi.spyOn(db, 'putTask').mockImplementation(async (storedTask: TaskRecord) => {
+      if (storedTask.status === 'done') {
+        await donePersisted
+      }
+      return storedTask.id
+    })
+
+    await submitTask()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      status: 'running',
+      outputImages: [],
+    })
+
+    releaseDonePersist?.()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(useStore.getState().tasks[0]).toMatchObject({
+      status: 'done',
+      outputImages: [expect.stringMatching(/^stored-image-/)],
+    })
+
+    putTaskSpy.mockRestore()
   })
 
   it('preserves selected image mentions when replacing a mask target with an equivalent image id', () => {
@@ -1769,7 +1865,7 @@ describe('reused task API profile', () => {
     const state = useStore.getState()
     expect(state.settings.activeProfileId).toBe(openaiProfile.id)
     expect(state.reusedTaskApiProfileId).toBe(falProfile.id)
-    expect(state.params).toMatchObject({ n: 4, size: '1360x1024', quality: 'high' })
+    expect(state.params).toMatchObject({ n: 4, size: 'auto', quality: 'auto' })
     expect(state.showToast).toHaveBeenCalledWith('已临时复用该任务的 API 配置「fal 配置」', 'success')
   })
 
@@ -1827,7 +1923,7 @@ describe('reused task API profile', () => {
     const state = useStore.getState()
     expect(state.settings.activeProfileId).toBe(openaiProfile.id)
     expect(state.reusedTaskApiProfileId).toBeNull()
-    expect(state.params).toMatchObject({ n: 8, size: 'auto', quality: 'auto' })
+    expect(state.params).toMatchObject({ n: 4, size: 'auto', quality: 'auto' })
   })
 
   it('asks whether to submit with current API profile when the reused API profile is missing', async () => {

@@ -10,6 +10,14 @@ export interface DevProxyConfig {
 
 const DEFAULT_PROXY_PREFIX = '/api-proxy'
 
+function shouldRouteThroughV1(path: string): boolean {
+  const normalized = path.replace(/^\/+/, '')
+  return normalized === 'responses'
+    || normalized === 'models'
+    || normalized.startsWith('images/')
+    || normalized.startsWith('files/')
+}
+
 export function normalizeBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim()
   if (!trimmed) return ''
@@ -31,6 +39,19 @@ export function normalizeBaseUrl(baseUrl: string): string {
     return `${url.origin}${pathname}`
   } catch {
     return trimmed.replace(/\/+$/, '')
+  }
+}
+
+export function isCrossOriginApiBaseUrl(baseUrl: string): boolean {
+  if (typeof window === 'undefined' || !window.location?.origin) return false
+
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl)
+  if (!normalizedBaseUrl) return true
+
+  try {
+    return new URL(normalizedBaseUrl).origin !== window.location.origin
+  } catch {
+    return false
   }
 }
 
@@ -64,7 +85,11 @@ export function buildApiUrl(
   const endpointPath = path.replace(/^\/+/, '')
 
   if (useApiProxy) {
-    return `${proxyConfig?.prefix ?? DEFAULT_PROXY_PREFIX}/${endpointPath}`
+    const prefix = proxyConfig?.prefix ?? DEFAULT_PROXY_PREFIX
+    if (!proxyConfig && shouldRouteThroughV1(endpointPath)) {
+      return `${prefix}/v1/${endpointPath}`
+    }
+    return `${prefix}/${endpointPath}`
   }
 
   const apiPath = normalizedBaseUrl.endsWith('/v1')
@@ -95,5 +120,5 @@ export function isApiProxyLocked(proxyConfig: DevProxyConfig | null = readClient
 }
 
 export function shouldUseApiProxy(apiProxy: boolean, proxyConfig: DevProxyConfig | null = readClientDevProxyConfig()): boolean {
-  return isApiProxyAvailable(proxyConfig) && (apiProxy || isApiProxyLocked(proxyConfig))
+  return isApiProxyAvailable(proxyConfig) && apiProxy
 }

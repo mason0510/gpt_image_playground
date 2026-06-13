@@ -13,7 +13,7 @@ export const ZIP_DOWNLOAD_ROUTE_VALUES = [
 ] as const
 export type ZipDownloadRoute = typeof ZIP_DOWNLOAD_ROUTE_VALUES[number]
 export const DEFAULT_ZIP_DOWNLOAD_ROUTES: ZipDownloadRoute[] = ['task-selection', 'favorite-collection-selection']
-export type BuiltInApiProvider = 'openai' | 'fal'
+export type BuiltInApiProvider = 'openai' | 'sublb' | 'fal'
 export type ApiProvider = BuiltInApiProvider | string
 export type CustomProviderTemplate = 'http-image'
 export const DEFAULT_STREAM_PARTIAL_IMAGES = 1
@@ -365,12 +365,7 @@ export interface ResponsesOutputItem {
       title?: string
     }>
   }>
-  result?: string | {
-    b64_json?: string
-    base64?: string
-    image?: string
-    data?: string
-  }
+  result?: unknown
   size?: string
   quality?: string
   output_format?: string

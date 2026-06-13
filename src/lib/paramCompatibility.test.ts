@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_PARAMS } from '../types'
-import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
+import { createDefaultOpenAIProfile, DEFAULT_SETTINGS, normalizeSettings } from './apiProfiles'
 import { getOutputImageLimitForSettings, normalizeParamsForSettings } from './paramCompatibility'
 
 describe('parameter compatibility', () => {
-  it('limits OpenAI output count to 10', () => {
+  it('limits OpenAI output count to 4 per request', () => {
     const openAIProfile = createDefaultOpenAIProfile({ apiKey: 'test-key', streamImages: false })
     const settings = normalizeSettings({
       ...DEFAULT_SETTINGS,
@@ -12,18 +12,29 @@ describe('parameter compatibility', () => {
       activeProfileId: openAIProfile.id,
     })
 
-    expect(getOutputImageLimitForSettings(settings)).toBe(10)
-    expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, n: 12 }, settings).n).toBe(10)
+    expect(getOutputImageLimitForSettings(settings)).toBe(4)
+    expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, n: 12 }, settings).n).toBe(4)
   })
 
-  it('limits fal.ai output count to 4', () => {
-    const falProfile = createDefaultFalProfile({ apiKey: 'fal-key' })
+  it('migrates legacy fal.ai settings to OpenAI-compatible limits', () => {
     const settings = normalizeSettings({
       ...DEFAULT_SETTINGS,
-      profiles: [falProfile],
-      activeProfileId: falProfile.id,
+      profiles: [{
+        id: 'legacy-fal',
+        name: 'Legacy fal',
+        provider: 'fal',
+        baseUrl: 'https://proxy.example.com',
+        apiKey: 'fal-key',
+        model: 'openai/gpt-image-2',
+        timeout: 600,
+        apiMode: 'images',
+        codexCli: false,
+        apiProxy: false,
+      }],
+      activeProfileId: 'legacy-fal',
     })
 
+    expect(settings.profiles[0].provider).toBe('sublb')
     expect(getOutputImageLimitForSettings(settings)).toBe(4)
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, n: 8 }, settings).n).toBe(4)
   })
@@ -39,15 +50,41 @@ describe('parameter compatibility', () => {
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, n: 4 }, settings).n).toBe(4)
   })
 
-  it('only replaces fal.ai auto size in text-to-image mode', () => {
-    const falProfile = createDefaultFalProfile({ apiKey: 'fal-key' })
+  it('keeps auto size after migrating legacy fal.ai settings to SubLB', () => {
     const settings = normalizeSettings({
       ...DEFAULT_SETTINGS,
-      profiles: [falProfile],
-      activeProfileId: falProfile.id,
+      profiles: [{
+        id: 'legacy-fal',
+        name: 'Legacy fal',
+        provider: 'fal',
+        baseUrl: 'https://proxy.example.com',
+        apiKey: 'fal-key',
+        model: 'openai/gpt-image-2',
+        timeout: 600,
+        apiMode: 'images',
+        codexCli: false,
+        apiProxy: false,
+      }],
+      activeProfileId: 'legacy-fal',
     })
 
-    expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, size: 'auto' }, settings).size).toBe('1360x1024')
+    expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, size: 'auto' }, settings).size).toBe('auto')
     expect(normalizeParamsForSettings({ ...DEFAULT_PARAMS, size: 'auto' }, settings, { hasInputImages: true }).size).toBe('auto')
+  })
+
+  it('falls back invalid persisted output format before submit or edit request', () => {
+    const openAIProfile = createDefaultOpenAIProfile({ apiKey: 'test-key', streamImages: false })
+    const settings = normalizeSettings({
+      ...DEFAULT_SETTINGS,
+      profiles: [openAIProfile],
+      activeProfileId: openAIProfile.id,
+    })
+
+    const unsafeParams = {
+      ...DEFAULT_PARAMS,
+      output_format: 'pong',
+    } as unknown as typeof DEFAULT_PARAMS
+
+    expect(normalizeParamsForSettings(unsafeParams, settings).output_format).toBe('png')
   })
 })

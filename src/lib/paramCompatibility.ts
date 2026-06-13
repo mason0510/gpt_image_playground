@@ -1,13 +1,13 @@
 import { DEFAULT_PARAMS, type AppSettings, type TaskParams } from '../types'
-import { getActiveApiProfile } from './apiProfiles'
+import { getActiveApiProfile, isBuiltInOpenAICompatibleProvider } from './apiProfiles'
 import { normalizeImageSize } from './size'
 
 export const DEFAULT_FAL_IMAGE_SIZE = '1360x1024'
-export const MAX_FAL_OUTPUT_IMAGES = 4
-export const MAX_OPENAI_OUTPUT_IMAGES = 10
+export const MAX_OUTPUT_IMAGES_PER_REQUEST = 4
 
 export function getOutputImageLimitForSettings(settings: AppSettings) {
-  return getActiveApiProfile(settings).provider === 'fal' ? MAX_FAL_OUTPUT_IMAGES : MAX_OPENAI_OUTPUT_IMAGES
+  getActiveApiProfile(settings)
+  return MAX_OUTPUT_IMAGES_PER_REQUEST
 }
 
 export function normalizeParamsForSettings(
@@ -20,10 +20,13 @@ export function normalizeParamsForSettings(
   const nextParams: TaskParams = {
     ...params,
     size: normalizeImageSize(params.size) || DEFAULT_PARAMS.size,
+    quality: normalizeQuality(params.quality),
+    output_format: normalizeOutputFormat(params.output_format),
+    moderation: normalizeModeration(params.moderation),
     n: Math.min(outputImageLimit, Math.max(1, params.n || DEFAULT_PARAMS.n)),
   }
 
-  if (activeProfile.provider === 'openai' && activeProfile.codexCli) {
+  if (isBuiltInOpenAICompatibleProvider(activeProfile.provider) && activeProfile.codexCli) {
     nextParams.quality = DEFAULT_PARAMS.quality
   }
 
@@ -39,6 +42,18 @@ export function normalizeParamsForSettings(
   }
 
   return nextParams
+}
+
+export function normalizeOutputFormat(value: unknown): TaskParams['output_format'] {
+  return value === 'png' || value === 'jpeg' || value === 'webp' ? value : DEFAULT_PARAMS.output_format
+}
+
+function normalizeQuality(value: unknown): TaskParams['quality'] {
+  return value === 'auto' || value === 'low' || value === 'medium' || value === 'high' ? value : DEFAULT_PARAMS.quality
+}
+
+function normalizeModeration(value: unknown): TaskParams['moderation'] {
+  return value === 'auto' || value === 'low' ? value : DEFAULT_PARAMS.moderation
 }
 
 export function getChangedParams(current: TaskParams, next: TaskParams): Partial<TaskParams> {

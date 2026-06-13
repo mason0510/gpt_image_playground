@@ -4,8 +4,9 @@ import { useStore, ensureImageThumbnailCached, subscribeImageThumbnail, retryTas
 import { formatImageRatio } from '../lib/size'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL } from '../lib/apiProfiles'
+import { downloadImageIds } from '../lib/downloadImages'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
-import { CodeIcon } from './icons'
+import { CodeIcon, DownloadIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
 
 interface Props {
@@ -78,6 +79,7 @@ export default function TaskCard({
   const toggleTaskSelection = useStore((s) => s.toggleTaskSelection)
   const settings = useStore((s) => s.settings)
   const openFavoritePicker = useStore((s) => s.openFavoritePicker)
+  const showToast = useStore((s) => s.showToast)
   const streamPreviewSrc = useStore((s) => s.streamPreviews[task.id] || '')
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
   const swipeResetTimerRef = useRef<number | null>(null)
@@ -320,6 +322,17 @@ export default function TaskCard({
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
   const isInterrupted = task.status === 'error' && task.error === '已停止生成。'
+
+  const handleDownloadStreamPreview = async () => {
+    if (!streamPreviewSrc) return
+    try {
+      const result = await downloadImageIds([streamPreviewSrc], `task-${task.id}-preview`)
+      showToast(result.successCount > 0 ? '预览图已下载' : '下载失败', result.successCount > 0 ? 'success' : 'error')
+    } catch (err) {
+      console.error(err)
+      showToast('下载失败', 'error')
+    }
+  }
 
   return (
     <div className="relative rounded-xl">
@@ -634,6 +647,15 @@ export default function TaskCard({
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                   </svg>
+                </TaskActionButton>
+              )}
+              {task.status === 'running' && streamPreviewSrc && (
+                <TaskActionButton
+                  tooltip="下载预览图"
+                  onClick={handleDownloadStreamPreview}
+                  className="p-1.5 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/30 text-gray-400 hover:text-blue-500 transition"
+                >
+                  <DownloadIcon className="w-4 h-4" />
                 </TaskActionButton>
               )}
               <TaskActionButton

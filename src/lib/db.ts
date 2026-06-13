@@ -9,6 +9,8 @@ const STORE_AGENT_CONVERSATIONS = 'agentConversations'
 const THUMBNAIL_MAX_SIZE = 720
 const THUMBNAIL_QUALITY = 0.9
 const THUMBNAIL_VERSION = 2
+const STORAGE_REDUCED_IMAGE_QUALITIES = [0.92, 0.86, 0.8, 0.72]
+const STORAGE_REDUCED_IMAGE_MAX_EDGES = [undefined, 3072, 2048, 1536, 1024] as const
 
 export const CURRENT_THUMBNAIL_VERSION = THUMBNAIL_VERSION
 
@@ -316,4 +318,63 @@ async function safeCreateImageThumbnail(dataUrl: string): Promise<Partial<Omit<S
   } catch {
     return {}
   }
+}
+
+function getScaledSize(width: number, height: number, maxEdge: number) {
+  if (!maxEdge || Math.max(width, height) <= maxEdge) {
+    return { width, height }
+  }
+
+  const scale = maxEdge / Math.max(width, height)
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  }
+}
+
+function createCanvasForImage(image: HTMLImageElement, maxEdge?: number) {
+  const width = image.naturalWidth
+  const height = image.naturalHeight
+  if (width <= 0 || height <= 0) throw new Error('图片尺寸无效')
+  const scaled = maxEdge ? getScaledSize(width, height, maxEdge) : { width, height }
+  const canvas = document.createElement('canvas')
+  canvas.width = scaled.width
+  canvas.height = scaled.height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('当前浏览器不支持 Canvas')
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+  return canvas
+}
+
+/**
+ * 为“生成结果持久化”准备更省空间的候选图。
+ * 仅用于本地落盘兜底，不影响接口原始返回。
+ */
+export async function getReducedStorageImageCandidates(dataUrl: string): Promise<string[]> {
+  const image = await loadImage(dataUrl)
+  const originalLength = dataUrl.length
+  const candidates: string[] = []
+  const seen = new Set<string>()
+
+  for (const maxEdge of STORAGE_REDUCED_IMAGE_MAX_EDGES) {
+    let canvas: HTMLCanvasElement
+    try {
+      canvas = createCanvasForImage(image, maxEdge)
+    } catch {
+      continue
+    }
+
+    for (const quality of STORAGE_REDUCED_IMAGE_QUALITIES) {
+      try {
+        const candidate = canvas.toDataURL('image/webp', quality)
+        if (!candidate || candidate === dataUrl || candidate.length >= originalLength || seen.has(candidate)) continue
+        seen.add(candidate)
+        candidates.push(candidate)
+      } catch {
+        // ignore unsupported encode attempts and continue degrading
+      }
+    }
+  }
+
+  return candidates
 }

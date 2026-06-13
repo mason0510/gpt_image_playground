@@ -37,12 +37,15 @@ function mapFalQuality(quality: TaskParams['quality']): 'low' | 'medium' | 'high
 }
 
 function configureFal(profile: ApiProfile) {
-  const baseUrl = profile.baseUrl.trim().replace(/\/+$/, '') || DEFAULT_FAL_BASE_URL
+  const baseUrl = profile.baseUrl.trim().replace(/\/+$/, '')
+  if (!baseUrl) {
+    throw new Error('缺少 fal API URL，请在设置中填写自定义地址')
+  }
   const config: Parameters<typeof fal.config>[0] = {
     credentials: profile.apiKey,
     suppressLocalCredentialsWarning: true,
   }
-  if (baseUrl !== DEFAULT_FAL_BASE_URL) config.proxyUrl = baseUrl
+  config.proxyUrl = baseUrl
   fal.config(config)
 }
 
@@ -124,8 +127,8 @@ async function parseFalImageResults(payload: FalApiResponse, fallbackMime: strin
   if (!results.length) {
     const err = new Error(
       customBaseUrlLabel
-        ? `${customBaseUrlLabel} 没有返回可识别的图片数据，请查看原始响应内容确认实际返回的数据结构。如果当前接口与 fal.ai 格式不兼容，建议创建并使用「自定义服务商」配置。`
-        : 'fal.ai 未返回可用图片数据',
+        ? `${customBaseUrlLabel} 没有返回可识别的图片数据，请查看原始响应内容确认实际返回的数据结构。如果当前接口与旧版兼容格式不兼容，建议创建并使用「自定义服务商」配置。`
+        : '旧版兼容服务未返回可用图片数据',
     )
     if (customBaseUrlLabel) {
       ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)

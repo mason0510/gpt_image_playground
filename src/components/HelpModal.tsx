@@ -62,9 +62,35 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
         </div>
 
         <div className="flex-1 overflow-y-auto overscroll-contain mb-6 text-sm text-gray-600 dark:text-gray-300 space-y-6 custom-scrollbar pr-2">
+          <section className="rounded-2xl border border-blue-100 bg-blue-50/80 p-4 dark:border-blue-500/20 dark:bg-blue-500/10">
+            <h4 className="mb-3 text-sm font-semibold text-blue-900 dark:text-blue-200">快速开始</h4>
+            {isAgentMode ? (
+              <ol className="list-decimal pl-4 space-y-2 text-blue-900/90 dark:text-blue-100/90">
+                <li>先点右上角 <strong>设置</strong>，在 API Key 处选择 <strong>限时免费 key</strong> 体验，或切到 <strong>自定义 API Key</strong> 填写自己的 key。</li>
+                <li>把服务模式切到 <strong>Agent</strong>，直接输入你的任务，例如“根据这张参考图生成海报”。</li>
+                <li>需要联网时，到设置里开启 <strong>网络搜索</strong>；需要引用图片时，在输入框里输入 <strong>@</strong> 选择图片。</li>
+                <li>生成结果会自动同步到画廊，方便继续编辑、收藏和下载。</li>
+              </ol>
+            ) : (
+              <ol className="list-decimal pl-4 space-y-2 text-blue-900/90 dark:text-blue-100/90">
+                <li>先点右上角 <strong>设置</strong>，在 API Key 处选择 <strong>限时免费 key</strong> 体验，或切到 <strong>自定义 API Key</strong> 填写自己的 key。</li>
+                <li>回到画廊页，在输入框中填写提示词；如需改图，可上传参考图或遮罩图。</li>
+                <li>点击生成后，结果会出现在历史任务列表中；点开任务卡片可查看大图、下载或继续编辑。</li>
+                <li>如果要批量整理结果，可使用收藏夹、多选、批量下载等功能。</li>
+              </ol>
+            )}
+          </section>
+
           {isAgentMode ? (
             <>
               <section>
+                <h4 className="mb-4 text-sm font-medium text-gray-800 dark:text-gray-200 flex items-center gap-1.5">
+                  <svg className="w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6l4 2" />
+                    <circle cx="12" cy="12" r="9" />
+                  </svg>
+                  Agent 使用说明
+                </h4>
                 <div className="space-y-4">
                   <ul className="list-disc pl-4 space-y-2">
                     <li>需要使用 Responses API 配置。</li>
@@ -115,6 +141,21 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
               <section>
                 <h4 className="mb-4 text-sm font-medium text-gray-800 dark:text-gray-200 flex items-center gap-1.5">
                   <svg className="w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M12 5l7 7-7 7" />
+                  </svg>
+                  手机端建议
+                </h4>
+                <div className="space-y-4">
+                  <ul className="list-disc pl-4 space-y-2">
+                    <li>首次进入建议先打开右上角 <strong>设置</strong>：可选择 <strong>限时免费 key</strong> 快速体验，也可填写自己的 API Key。</li>
+                    <li>历史任务支持左右滑动多选；点开任务卡片可看大图、下载或再次编辑。</li>
+                    <li>如果想像 App 一样使用，可点右上角安装按钮添加到主屏幕。</li>
+                  </ul>
+                </div>
+              </section>
+              <section>
+                <h4 className="mb-4 text-sm font-medium text-gray-800 dark:text-gray-200 flex items-center gap-1.5">
+                  <svg className="w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
                   </svg>
                   多选任务
@@ -137,6 +178,21 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
             </>
           ) : (
             <>
+              <section>
+                <h4 className="mb-4 text-sm font-medium text-gray-800 dark:text-gray-200 flex items-center gap-1.5">
+                  <svg className="w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M12 5l7 7-7 7" />
+                  </svg>
+                  桌面端建议
+                </h4>
+                <div className="space-y-4">
+                  <ul className="list-disc pl-4 space-y-2">
+                    <li>先完成接口配置：可选择 <strong>限时免费 key</strong> 快速体验，也可填写自己的 API Key，再开始生成。</li>
+                    <li>生成后可直接点开任务卡片查看大图、重试、加入收藏夹或继续编辑。</li>
+                    <li>批量整理图片时，优先用框选、多选和批量下载。</li>
+                  </ul>
+                </div>
+              </section>
               <section>
                 <h4 className="mb-4 text-sm font-medium text-gray-800 dark:text-gray-200 flex items-center gap-1.5">
                   <svg className="w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -170,7 +226,7 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
 
         <div className="pt-4 border-t border-gray-200 dark:border-white/[0.08] flex justify-center">
           <a
-            href="https://github.com/CookSleep/gpt_image_playground"
+            href="https://github.com/mason0510"
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors group"
@@ -178,7 +234,7 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
             <svg className="w-5 h-5 group-hover:scale-110 transition-transform" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
             </svg>
-            @CookSleep
+            @mason0510
           </a>
         </div>
       </div>

@@ -4,13 +4,13 @@ import { buildApiUrl } from './devProxy'
 describe('buildApiUrl', () => {
   it('uses the same-origin proxy prefix when API proxy is enabled', () => {
     expect(buildApiUrl('http://api.example.com/v1', 'images/edits', null, true)).toBe(
-      '/api-proxy/images/edits',
+      '/api-proxy/v1/images/edits',
     )
   })
 
-  it('leaves API versioning to the proxy target when proxying', () => {
+  it('adds v1 for built-in OpenAI compatible endpoints when proxying without explicit proxy target', () => {
     expect(buildApiUrl('http://api.example.com', 'images/generations', null, true)).toBe(
-      '/api-proxy/images/generations',
+      '/api-proxy/v1/images/generations',
     )
   })
 
@@ -29,6 +29,23 @@ describe('buildApiUrl', () => {
         true,
       ),
     ).toBe('/openai-proxy/responses')
+  })
+
+  it('keeps custom provider relative paths unchanged when proxy prefix is customized', () => {
+    expect(
+      buildApiUrl(
+        'http://api.example.com',
+        'custom/images',
+        {
+          enabled: true,
+          prefix: '/openai-proxy',
+          target: 'http://api.example.com/v1',
+          changeOrigin: true,
+          secure: false,
+        },
+        true,
+      ),
+    ).toBe('/openai-proxy/custom/images')
   })
 
   it('uses the configured API URL directly when API proxy is disabled', () => {

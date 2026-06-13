@@ -1,4 +1,6 @@
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
+import { tracedFetch } from './apiDebugTrace'
+import { createApiAuthorizationHeaders, isLimitedFreeApiKey } from './apiKeyMode'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import { getApiErrorMessage, MIME_MAP, normalizeBase64Image, pickActualParams } from './imageApiShared'
 
@@ -75,11 +77,15 @@ const AGENT_TITLE_INSTRUCTIONS = [
 
 const AGENT_TITLE_MAX_LENGTH = 28
 
-function createHeaders(profile: ApiProfile): Record<string, string> {
+function createHeaders(profile: ApiProfile, useApiProxy: boolean): Record<string, string> {
   return {
-    Authorization: `Bearer ${profile.apiKey}`,
+    ...createApiAuthorizationHeaders(profile.apiKey, useApiProxy),
     'Content-Type': 'application/json',
   }
+}
+
+function traceMeta(profile: ApiProfile, useApiProxy: boolean, label: string) {
+  return { profile, useApiProxy, label }
 }
 
 function createImageTool(params: TaskParams, profile: ApiProfile, maskDataUrl?: string): Record<string, unknown> {
@@ -391,6 +397,18 @@ function parseAgentConversationTitleXml(text: string) {
   return `${chars.slice(0, AGENT_TITLE_MAX_LENGTH - 3).join('')}...`
 }
 
+function readResponseImageBase64(result: ResponsesOutputItem['result']): string {
+  if (typeof result === 'string') return result
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return ''
+
+  const record = result as Record<string, unknown>
+  if (typeof record.b64_json === 'string') return record.b64_json
+  if (typeof record.base64 === 'string') return record.base64
+  if (typeof record.image === 'string') return record.image
+  if (typeof record.data === 'string') return record.data
+  return ''
+}
+
 function extractImages(payload: ResponsesApiResponse, fallbackMime: string): AgentApiResultImage[] {
   const images: AgentApiResultImage[] = []
 
@@ -410,15 +428,7 @@ function extractImages(payload: ResponsesApiResponse, fallbackMime: string): Age
     }
 
     if (result && typeof result === 'object') {
-      const b64 = typeof result.b64_json === 'string'
-        ? result.b64_json
-        : typeof result.base64 === 'string'
-        ? result.base64
-        : typeof result.image === 'string'
-        ? result.image
-        : typeof result.data === 'string'
-        ? result.data
-        : ''
+      const b64 = readResponseImageBase64(result)
       if (b64.trim()) {
         images.push({
           toolCallId: typeof item.id === 'string' ? item.id : undefined,
@@ -441,15 +451,7 @@ function extractImageFromOutputItem(item: ResponsesOutputItem, fallbackMime: str
   const b64 = typeof result === 'string'
     ? result
     : result && typeof result === 'object'
-    ? typeof result.b64_json === 'string'
-      ? result.b64_json
-      : typeof result.base64 === 'string'
-      ? result.base64
-      : typeof result.image === 'string'
-      ? result.image
-      : typeof result.data === 'string'
-      ? result.data
-      : ''
+    ? readResponseImageBase64(result)
     : ''
 
   if (!b64.trim()) return null
@@ -617,7 +619,7 @@ export async function callAgentResponsesApi(opts: {
   const { settings, profile, params, input, maskDataUrl, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted } = opts
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
-  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
+  const useApiProxy = isLimitedFreeApiKey(profile.apiKey) || shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
   const abortFromCaller = () => controller.abort()
@@ -635,13 +637,13 @@ export async function callAgentResponsesApi(opts: {
       body.stream = true
     }
 
-    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
+    const response = await tracedFetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
       method: 'POST',
-      headers: createHeaders(profile),
+      headers: createHeaders(profile, useApiProxy),
       cache: 'no-store',
       body: JSON.stringify(body),
       signal: controller.signal,
-    })
+    }, traceMeta(profile, useApiProxy, 'agent-responses'))
 
     if (!response.ok) {
       throw new Error(await getApiErrorMessage(response))
@@ -675,7 +677,7 @@ export async function callAgentConversationTitleApi(opts: {
 }): Promise<string> {
   const { settings, profile, prompt, imageDataUrls, signal } = opts
   const proxyConfig = readClientDevProxyConfig()
-  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
+  const useApiProxy = isLimitedFreeApiKey(profile.apiKey) || shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
   const abortFromCaller = () => controller.abort()
@@ -690,9 +692,9 @@ export async function callAgentConversationTitleApi(opts: {
       content.push({ type: 'input_image', image_url: dataUrl })
     }
 
-    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
+    const response = await tracedFetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
       method: 'POST',
-      headers: createHeaders(profile),
+      headers: createHeaders(profile, useApiProxy),
       cache: 'no-store',
       body: JSON.stringify({
         model: profile.model || settings.model,
@@ -701,7 +703,7 @@ export async function callAgentConversationTitleApi(opts: {
         max_output_tokens: 32,
       }),
       signal: controller.signal,
-    })
+    }, traceMeta(profile, useApiProxy, 'agent-title'))
 
     if (!response.ok) {
       throw new Error(await getApiErrorMessage(response))
@@ -752,7 +754,7 @@ export async function callBatchImageSingle(opts: {
   const { profile, params, batchItemId, prompt, referenceImageDataUrls, referenceIds, signal, onImageToolStarted, onPartialImage, onImageToolCompleted } = opts
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
-  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
+  const useApiProxy = isLimitedFreeApiKey(profile.apiKey) || shouldUseApiProxy(profile.apiProxy, proxyConfig)
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
   const abortFromCaller = () => controller.abort()
@@ -807,13 +809,13 @@ export async function callBatchImageSingle(opts: {
       body.stream = true
     }
 
-    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
+    const response = await tracedFetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
       method: 'POST',
-      headers: createHeaders(profile),
+      headers: createHeaders(profile, useApiProxy),
       cache: 'no-store',
       body: JSON.stringify(body),
       signal: controller.signal,
-    })
+    }, traceMeta(profile, useApiProxy, 'agent-batch-image'))
 
     if (!response.ok) {
       const errorMsg = await getApiErrorMessage(response)

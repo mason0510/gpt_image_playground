@@ -240,3 +240,45 @@ export function CollectionManageIcon(props: SVGProps<SVGSVGElement>) {
     </svg>
   )
 }
+
+export function BrandMarkIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 512 512" fill="none" aria-hidden="true" {...props}>
+      <defs>
+        <radialGradient id="brand-bg" cx="50%" cy="45%" r="70%">
+          <stop offset="0%" stopColor="#151b3e" />
+          <stop offset="58%" stopColor="#0b1028" />
+          <stop offset="100%" stopColor="#050713" />
+        </radialGradient>
+        <linearGradient id="brand-cyan" x1="114" y1="394" x2="395" y2="118" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#23b8ff" />
+          <stop offset="0.52" stopColor="#29f4ff" />
+          <stop offset="1" stopColor="#73fff3" />
+        </linearGradient>
+        <filter id="brand-glow" x="-35%" y="-35%" width="170%" height="170%">
+          <feGaussianBlur stdDeviation="8" result="blur" />
+          <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.08 0 0 0 0 0.84 0 0 0 0 1 0 0 0 0.72 0" result="glow" />
+          <feMerge>
+            <feMergeNode in="glow" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+      <rect width="512" height="512" rx="96" fill="url(#brand-bg)" />
+      <g opacity="0.25" fill="none" stroke="#6d7cff" strokeWidth="1.5">
+        <path d="M26 244C122 151 188 94 314 55" />
+        <path d="M40 408C164 314 236 240 472 74" />
+        <path d="M94 462C178 356 264 274 493 176" />
+        <circle cx="96" cy="262" r="44" opacity="0.18" />
+        <circle cx="382" cy="97" r="10" fill="#6d7cff" opacity="0.45" />
+        <circle cx="438" cy="430" r="14" fill="#6d7cff" opacity="0.2" />
+      </g>
+      <g filter="url(#brand-glow)">
+        <path fill="url(#brand-cyan)" d="M160 326c-15-56-2-117 41-160 45-45 111-57 167-36l-39 39c-35-8-73 2-100 29-25 25-36 61-30 95l-39 33Z" />
+        <path fill="url(#brand-cyan)" d="M350 342c30-29 41-73 28-112l39-39c25 60 13 132-36 181-43 43-104 56-160 41l38-38c32 5 66-6 91-33Z" />
+        <path fill="url(#brand-cyan)" d="M373 118 216 311l69-24 111-145 3-58-26 34Z" />
+        <circle cx="183" cy="348" r="31" fill="url(#brand-cyan)" />
+      </g>
+    </svg>
+  )
+}

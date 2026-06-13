@@ -25,23 +25,15 @@ describe('callFalAiImageApi', () => {
     vi.clearAllMocks()
   })
 
-  it('uses the default fal endpoint without proxyUrl', async () => {
-    falMock.subscribe.mockResolvedValue({
-      requestId: 'req-1',
-      data: { images: [{ b64_json: 'aW1hZ2U=' }] },
-    })
-
-    await callFalAiImageApi({
+  it('requires a custom fal API URL when using the legacy fal provider', async () => {
+    await expect(callFalAiImageApi({
       settings: DEFAULT_SETTINGS,
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
-    }, createDefaultFalProfile({ apiKey: 'fal-key', baseUrl: DEFAULT_FAL_BASE_URL }))
+    }, createDefaultFalProfile({ apiKey: 'fal-key', baseUrl: DEFAULT_FAL_BASE_URL }))).rejects.toThrow('缺少 fal API URL，请在设置中填写自定义地址')
 
-    expect(falMock.config).toHaveBeenCalledWith({
-      credentials: 'fal-key',
-      suppressLocalCredentialsWarning: true,
-    })
+    expect(falMock.config).not.toHaveBeenCalled()
   })
 
   it('passes custom fal API URL to the SDK proxyUrl option', async () => {

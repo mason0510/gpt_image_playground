@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 
-const REPO = 'CookSleep/gpt_image_playground'
-const API_URL = `https://api.github.com/repos/${REPO}/releases/latest`
+const RELEASE_REPO = (import.meta.env.VITE_RELEASE_REPO ?? '').trim()
+const API_URL = RELEASE_REPO ? `https://api.github.com/repos/${RELEASE_REPO}/releases/latest` : ''
 
 function compareVersions(a: string, b: string) {
   const aParts = a.split('.').map((part) => Number.parseInt(part, 10) || 0)
@@ -23,6 +23,8 @@ export interface LatestRelease {
 
 /**
  * 检查 GitHub 最新 Release 版本。
+ * 自部署站点默认不检查 GitHub Releases，避免不存在 release 时在控制台产生 404。
+ * 如需启用，构建时设置 VITE_RELEASE_REPO=owner/repo。
  * - 仅当最新 Release 版本高于当前 __APP_VERSION__ 时提示。
  * - 用户点击后调用 dismiss()，本次浏览期间不再提示（sessionStorage）。
  * - 刷新页面后重新检查。
@@ -34,21 +36,25 @@ export function useVersionCheck() {
   )
 
   useEffect(() => {
+    if (!API_URL) return
+
     let cancelled = false
 
     fetch(API_URL, { headers: { Accept: 'application/vnd.github.v3+json' } })
       .then((res) => {
+        if (res.status === 404) return null
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json()
       })
       .then((data) => {
+        if (!data) return
         if (cancelled) return
         const tag: string = data.tag_name ?? ''
         const version = tag.replace(/^v/, '')
         if (version && compareVersions(version, __APP_VERSION__) > 0) {
           setLatestRelease({
             tag,
-            url: data.html_url ?? `https://github.com/${REPO}/releases/latest`,
+            url: data.html_url ?? `https://github.com/${RELEASE_REPO}/releases/latest`,
           })
         }
       })

@@ -1,16 +1,16 @@
 <div align="center">
 
-# 🎨 GPT Image Playground
+# 🎨 绘想空间 · Imagination Space
 
-[![GitHub Repo stars](https://img.shields.io/github/stars/CookSleep/gpt_image_playground?style=flat-square&color=eab308)](https://github.com/CookSleep/gpt_image_playground/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/CookSleep/gpt_image_playground?style=flat-square&color=3b82f6)](https://github.com/CookSleep/gpt_image_playground/network/members)
-[![License](https://img.shields.io/badge/license-MIT-10b981?style=flat-square)](https://github.com/CookSleep/gpt_image_playground/blob/main/LICENSE)
+[![GitHub Repo stars](https://img.shields.io/github/stars/mason0510/gpt_image_playground?style=flat-square&color=eab308)](https://github.com/mason0510/gpt_image_playground/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/mason0510/gpt_image_playground?style=flat-square&color=3b82f6)](https://github.com/mason0510/gpt_image_playground/network/members)
+[![License](https://img.shields.io/badge/license-MIT-10b981?style=flat-square)](https://github.com/mason0510/gpt_image_playground/blob/main/LICENSE)
 [![React](https://img.shields.io/badge/React-19-20232A?style=flat-square&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-**基于 OpenAI gpt-image-2 API 的图片生成与编辑工具**
+**面向图像生成、编辑与 Agent 创作的视觉工作台**
 
-提供简洁精美的 Web UI，支持 OpenAI / OpenAI 兼容接口、fal.ai 与可导入的自定义 HTTP 服务商。<br>
+提供简洁精美的 Web UI，支持 OpenAI / OpenAI 兼容接口、自定义图像 API URL / 代理与可导入的自定义 HTTP 服务商。<br>
 支持文本生图、参考图与遮罩编辑，数据纯本地化存储，带来流畅的历史记录与参数管理体验。
 
 <br>
@@ -24,6 +24,21 @@
 <br>
 
 > 💡 **提示**：若需调用非 HTTPS 的内网或本地 HTTP API，请使用 GitHub Pages 版本或自行部署，Vercel 部署的体验版绑定的 `.dev` 域名因安全策略通常要求接口必须为 HTTPS。
+
+---
+
+## 🧭 线上使用指南
+
+绘想空间线上版支持两种 API Key 使用方式：
+
+1. **限时免费 key**：适合首次体验和轻量试用。进入 **设置 → API 配置 → API Key**，下拉选择 **限时免费 key** 即可；系统会通过站内同源代理使用服务器侧的体验额度，页面不会保存或展示真实 key。
+2. **自定义 API Key**：适合稳定、重度或正式使用。进入 **设置 → API 配置 → API Key**，选择 **自定义 API Key** 后填写自己的 key。推荐使用 [codex优质(按量付费)](https://sub-lb.tap365.org/keys) 或 [codex-pro（按量付费）](https://sub-lb.tap365.org/keys) 分组，体验最佳。
+
+使用建议：
+
+- 限时免费 key 仅用于合理范围内的体验使用，不承诺长期、无限或高并发可用。
+- 如果需要更稳定的额度、速度和可用性，请使用自己的 API Key。
+- Agent 模式需要选择支持 **Responses API + image_generation** 的模型；当前线上默认模型已按可用性收敛到 `gpt-5.4`。
 
 ---
 
@@ -82,7 +97,7 @@
 ### 🎨 强大的图像生成与编辑
 - **参考图与遮罩**：支持上传最多 16 张参考图（支持剪贴板和拖拽）。内置可视化遮罩编辑器，自动预处理以符合官方分辨率限制。
 - **批量与迭代**：支持单次多图生成；一键将满意结果转为参考图，无缝开启下一轮修改。
-- **流式生成预览**：`Images API` 与 `Responses API` 模式均支持流式接收中间步骤图像，缓解连接超时问题。
+- **流式生成预览**：普通生图固定走 `Images API`，支持流式接收中间步骤图像，缓解连接超时问题。
 
 ### 🤖 Agent 多轮对话模式
 - **多轮对话与上下文记忆**：基于 Responses API 的对话式生成，Agent 会理解上下文并按需调用图像工具；支持 `@` 引用参考图或前面轮次生成的图片，并自动识别上下文中的图片。
@@ -103,8 +118,8 @@
 
 ### 🔌 多配置与服务商增强
 - **多配置管理**：支持创建并保存多个 API 配置（包含服务商、API Key、模型等），按需快速切换；支持一键复制当前配置到列表底部，并通过拖拽对配置列表与服务商列表进行自定义排序。
-- **多服务商接入**：内置 OpenAI 兼容接口（含 `Images API` 和 `Responses API`）、fal.ai（支持队列），并支持通过 JSON 导入自定义 HTTP 服务商配置（兼容同步/异步任务）。
-- **API 代理**：OpenAI 兼容接口与 fal.ai 均可配置自定义代理。其中 OpenAI 兼容接口可开启同源 `/api-proxy/` 代理，交由 Docker 或本地开发环境转发至真实 API，绕开浏览器 CORS 限制。
+- **多服务商接入**：内置 OpenAI 兼容接口与 SubLB，支持填写自定义图像 API URL，并保留旧版异步任务的兼容恢复能力；同时支持通过 JSON 导入自定义 HTTP 服务商配置（兼容同步/异步任务）。
+- **API 代理**：OpenAI 兼容接口、SubLB 与自定义图像 API 均支持自定义代理。其中 OpenAI 兼容接口可开启同源 `/api-proxy/` 代理，交由 Docker 或本地开发环境转发至真实 API，绕开浏览器 CORS 限制。
 - **Codex CLI 兼容模式**：对上游为 Codex CLI 的 API，开启后应用 Codex CLI 实际支持的参数，并将多图生成拆分为并发单图。
 - **提示词防改写**：Responses API 会始终在请求文本前加入强制指令防止提示词被改写；开启 Codex CLI 模式后，Images API 也会获得同等保护。
 - **智能诊断提示**：当检测到接口异常改写行为或缺少常规参数时，自动提示开启相应的兼容模式。
@@ -119,7 +134,7 @@
 <details>
 <summary><strong>▲ 方式一：Vercel 一键部署 (推荐)</strong></summary>
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FCookSleep%2Fgpt_image_playground&project-name=gpt-image-playground&repository-name=gpt-image-playground)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fmason0510%2Fgpt_image_playground&project-name=gpt-image-playground&repository-name=gpt-image-playground)
 
 点击上方按钮导入仓库即可，Vercel 会自动执行构建并部署静态文件。
 
@@ -315,8 +330,8 @@ npm run build
 直接使用简短的查询参数配置：
 - `?apiUrl=https://你的代理地址.com`
 - `?apiKey=sk-xxxx`
-- `?apiMode=images` 或 `?apiMode=responses`（未传时默认为 `images`）
-- `?model=gpt-image-2`（未传时按 `apiMode` 使用默认模型）
+- 普通生图固定使用 Images API（`/v1/images/generations`），无需传 `apiMode`
+- `?model=gpt-image-2`（未传时使用默认 Images API 模型）
 - `?codexCli=true`（开启 Codex CLI 兼容模式）
 
 例如，集成到 New API 的聊天系统：
@@ -437,11 +452,11 @@ JSON 结构示例：
 ## ⭐ Star History
 
 <div align="center">
-  <a href="https://www.star-history.com/#CookSleep/gpt_image_playground&Date">
+  <a href="https://www.star-history.com/#mason0510/gpt_image_playground&Date">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=CookSleep/gpt_image_playground&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=CookSleep/gpt_image_playground&type=Date" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=CookSleep/gpt_image_playground&type=Date" />
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=mason0510/gpt_image_playground&type=Date&theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=mason0510/gpt_image_playground&type=Date" />
+      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=mason0510/gpt_image_playground&type=Date" />
     </picture>
   </a>
 </div>

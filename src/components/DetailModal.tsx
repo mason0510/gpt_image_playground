@@ -216,9 +216,9 @@ export default function DetailModal() {
   const codexCliPromptKey = getCodexCliPromptKey(settings)
   const hasHandledPromptWarning = settings.codexCli || dismissedCodexCliPrompts.includes(codexCliPromptKey)
   const taskProvider = task.apiProvider
-  const isOpenAiTask = (taskProvider ?? 'openai') === 'openai'
+  const isOpenAiTask = (taskProvider ?? 'openai') === 'openai' || taskProvider === 'sublb'
   const showPromptWarning = Boolean(isOpenAiTask && task.apiMode === 'responses' && currentOutputImageId && (!currentRevisedPrompt || showRevisedPrompt) && !hasHandledPromptWarning)
-  const taskProviderName = taskProvider === 'fal' ? 'fal.ai' : taskProvider ? 'OpenAI' : '未知'
+  const taskProviderName = taskProvider === 'fal' ? '旧版兼容配置' : taskProvider === 'sublb' ? 'SubLB' : taskProvider ? 'OpenAI' : '未知'
   const taskProfileName = task.apiProfileName || '未知'
   const taskModel = task.apiModel || '未知'
   const showSourceInfo = Boolean(task.apiProvider || task.apiProfileName || task.apiModel)
@@ -371,6 +371,23 @@ export default function DetailModal() {
         showToast(`部分下载失败：成功 ${result.successCount}，失败 ${result.failCount}`, 'error')
       } else {
         showToast(`下载成功：${result.successCount} 张中间步骤图`, 'success')
+      }
+    } catch (err) {
+      console.error(err)
+      showToast('下载失败', 'error')
+    }
+  }
+
+  const handleDownloadCurrentStreamPreview = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!task || !currentStreamPreviewSrc) return
+
+    try {
+      const result = await downloadImageIds([currentStreamPreviewSrc], `task-${task.id}-preview-${imageIndex + 1}`)
+      if (result.successCount === 0) {
+        showToast('下载失败', 'error')
+      } else {
+        showToast('预览图已下载', 'success')
       }
     } catch (err) {
       console.error(err)
@@ -550,9 +567,28 @@ export default function DetailModal() {
                     </svg>
                   )}
                   {streamPreviewLoaded && (
-                    <span className="absolute top-4 right-4 flex items-center gap-1 rounded bg-blue-500 px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm">
-                      流式预览
-                    </span>
+                    <div className="absolute right-4 top-4 z-20 flex items-center gap-1.5">
+                      <div className="relative group flex">
+                        <button
+                          type="button"
+                          {...downloadImageTooltip.handlers}
+                          onClick={(e) => {
+                            downloadImageTooltip.handlers.onClick()
+                            handleDownloadCurrentStreamPreview(e)
+                          }}
+                          className="flex items-center justify-center px-1.5 py-0.5 bg-black/50 text-white rounded backdrop-blur-sm hover:bg-black/70 transition focus:outline-none focus:ring-1 focus:ring-white/50"
+                          aria-label="下载预览图"
+                        >
+                          <DownloadIcon className="h-4 w-4" />
+                        </button>
+                        <ViewportTooltip visible={downloadImageTooltip.visible} className="whitespace-nowrap">
+                          下载预览图
+                        </ViewportTooltip>
+                      </div>
+                      <span className="flex items-center gap-1 rounded bg-blue-500 px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm">
+                        流式预览
+                      </span>
+                    </div>
                   )}
                   {streamPreviewLen > 1 && (
                     <>

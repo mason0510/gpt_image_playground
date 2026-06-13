@@ -1,4 +1,5 @@
 import type { AppSettings, TaskParams } from '../types'
+import { formatHttpApiErrorMessage, getApiTraceIdFromResponse } from './apiDebugTrace'
 
 export const MIME_MAP: Record<string, string> = {
   png: 'image/png',
@@ -113,18 +114,19 @@ async function probeNoCorsReachability(url: string, timeoutMs = 8000): Promise<'
   }
 }
 
-export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, signal?: AbortSignal): Promise<string> {
+export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, signal?: AbortSignal, fetchUrlOverride?: string): Promise<string> {
   if (isDataUrl(url)) return url
+  const requestUrl = fetchUrlOverride ?? url
 
   let response: Response
   try {
-    response = await fetch(url, {
+    response = await fetch(requestUrl, {
       cache: 'no-store',
       signal,
     })
   } catch (err) {
     if (err instanceof TypeError) {
-      const probe = await probeNoCorsReachability(url)
+      const probe = await probeNoCorsReachability(requestUrl)
       if (probe === 'opaque') {
         throw new Error(`图片已生成，但因服务商未允许跨域，图片链接下载失败。${IMAGE_FETCH_CORS_HINT}`)
       }
@@ -160,7 +162,7 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
       /* ignore */
     }
   }
-  return errorMsg
+  return formatHttpApiErrorMessage(errorMsg, getApiTraceIdFromResponse(response))
 }
 
 export function pickActualParams(source: unknown): Partial<TaskParams> {

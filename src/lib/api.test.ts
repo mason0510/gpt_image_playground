@@ -344,6 +344,47 @@ describe('callImageApi', () => {
     })
   })
 
+  it('stops waiting for more SSE data once Responses API emits response.completed', async () => {
+    let closed = false
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder()
+        controller.enqueue(encoder.encode('data: {"type":"response.completed","response":{"output":[{"type":"image_generation_call","result":"ZmluYWw=","size":"1024x1024"}]}}\n\n'))
+      },
+      cancel() {
+        closed = true
+      },
+    })
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }))
+
+    const result = await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        apiKey: 'test-key',
+        apiMode: 'responses',
+        streamImages: true,
+        streamPartialImages: 1,
+        profiles: DEFAULT_SETTINGS.profiles.map((profile) => ({
+          ...profile,
+          apiKey: 'test-key',
+          apiMode: 'responses',
+          streamImages: true,
+          streamPartialImages: 1,
+        })),
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    } as any)
+
+    expect(result.images).toEqual(['data:image/png;base64,ZmluYWw='])
+    expect(closed).toBe(true)
+  })
+
   it('parses Responses API image result objects in gallery mode', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       output: [{
@@ -368,6 +409,101 @@ describe('callImageApi', () => {
       actualParams: { size: '1024x1024' },
       actualParamsList: [{ size: '1024x1024' }],
     })
+  })
+
+  it('surfaces the upstream assistant text when Responses API returns message-only output', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'message',
+        content: [{
+          type: 'output_text',
+          text: '我无法直接为您生成图片。',
+        }],
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow('接口没有返回 image_generation_call，服务商实际返回了纯文本助手消息而非图片结果：我无法直接为您生成图片。')
+  })
+
+  it('accepts Responses API assistant SVG text output as an image result', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      output: [{
+        type: 'message',
+        content: [{
+          type: 'output_text',
+          text: '好的，这是一幅极简风格的红色苹果：\n\n```svg\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><circle cx=\"32\" cy=\"34\" r=\"18\" fill=\"#d22\" /></svg>\n```',
+        }],
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    const result = await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key', apiMode: 'responses' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(result.images).toHaveLength(1)
+    expect(result.images[0]).toMatch(/^data:image\/svg\+xml;charset=utf-8,/)
+    expect(decodeURIComponent(result.images[0].split(',')[1] ?? '')).toContain('<svg')
+  })
+
+  it('parses Responses API image URL results and rewrites matching upstream downloads through same-origin api proxy', async () => {
+    vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        output: [{
+          type: 'image_generation_call',
+          result: {
+            data: [{ url: 'https://sub-lb.tap365.org/v1/files/test-image.png?sig=1' }],
+          },
+          size: '1024x1024',
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      }))
+
+    const result = await callImageApi({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        apiKey: 'test-key',
+        apiMode: 'responses',
+        apiProxy: true,
+        baseUrl: 'https://sub-lb.tap365.org/v1',
+      },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api-proxy/v1/responses',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api-proxy/v1/files/test-image.png?sig=1',
+      expect.objectContaining({ cache: 'no-store' }),
+    )
+    expect(result.rawImageUrls).toEqual(['https://sub-lb.tap365.org/v1/files/test-image.png?sig=1'])
+    expect(result.images[0]).toMatch(/^data:image\/png;base64,/)
   })
 
   it('keeps Responses API stream output item images when completed response omits result', async () => {
@@ -431,7 +567,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api-proxy/images/generations',
+      '/api-proxy/v1/images/generations',
       expect.objectContaining({ method: 'POST' }),
     )
   })
@@ -458,7 +594,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api-proxy/images/generations',
+      '/api-proxy/v1/images/generations',
       expect.objectContaining({ method: 'POST' }),
     )
   })
@@ -585,7 +721,7 @@ describe('callImageApi', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api-proxy/images/generations',
+      '/api-proxy/v1/images/generations',
       expect.objectContaining({ method: 'POST' }),
     )
   })
@@ -610,6 +746,55 @@ describe('callImageApi', () => {
     expect(headers).not.toHaveProperty('Pragma')
     expect(headers).not.toHaveProperty('Cache-Control')
     expect((init as RequestInit).cache).toBe('no-store')
+  })
+
+  it('adds a client trace id header to API requests without exposing the API key', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const headers = (init as RequestInit).headers as Headers
+    expect(headers.get('x-client-trace-id')).toMatch(/^img_\d{14}_[a-z0-9]{6}$/i)
+    expect(headers.get('x-client-trace-id')).not.toContain('test-key')
+  })
+
+  it('includes trace id and upstream body in HTTP error messages', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      code: 'API_KEY_REQUIRED',
+      message: 'API key is required',
+    }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow(/请求失败，请检查接口配置或稍后重试。\n调试编号：img_\d{14}_[a-z0-9]{6}\n详细原因：API key is required/i)
+  })
+
+  it('normalizes failed fetch errors with trace id', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'))
+
+    await expect(callImageApi({
+      settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
+      prompt: 'prompt',
+      params: { ...DEFAULT_PARAMS },
+      inputImageDataUrls: [],
+    })).rejects.toThrow(/请求未发出或被浏览器拦截。\n调试编号：img_\d{14}_[a-z0-9]{6}\n详细原因：Failed to fetch/i)
   })
 
   it('ignores stored API proxy settings when the current deployment has no proxy', async () => {

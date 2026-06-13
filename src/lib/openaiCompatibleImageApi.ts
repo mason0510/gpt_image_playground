@@ -1,6 +1,8 @@
 import { DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type CustomProviderDefinition, type CustomProviderPollMapping, type CustomProviderResultMapping, type CustomProviderSubmitMapping, type ImageApiResponse, type ImageResponseItem, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
+import { tracedFetch } from './apiDebugTrace'
 import { dataUrlToBlob, imageDataUrlToPngBlob, maskDataUrlToPngBlob } from './canvasImage'
-import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
+import { buildApiUrl, normalizeBaseUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
+import { createApiAuthorizationHeaders, isLimitedFreeApiKey } from './apiKeyMode'
 import {
   assertImageInputPayloadSize,
   assertMaskEditFileSize,
@@ -80,10 +82,12 @@ function normalizeImageApiPayload(value: unknown): ImageApiResponse {
   return { data: [] }
 }
 
-function createRequestHeaders(profile: ApiProfile): Record<string, string> {
-  return {
-    Authorization: `Bearer ${profile.apiKey}`,
-  }
+function createRequestHeaders(profile: ApiProfile, useApiProxy: boolean): Record<string, string> {
+  return createApiAuthorizationHeaders(profile.apiKey, useApiProxy)
+}
+
+function traceMeta(profile: ApiProfile, useApiProxy: boolean, label: string) {
+  return { profile, useApiProxy, label }
 }
 
 function isEventStreamResponse(response: Response): boolean {
@@ -132,12 +136,18 @@ function parseServerSentEventBlock(block: string): string | null {
   return data
 }
 
-async function readJsonServerSentEvents(response: Response, onEvent: (event: Record<string, unknown>) => void | Promise<void>): Promise<void> {
+const STOP_READING_SSE = Symbol('STOP_READING_SSE')
+
+async function readJsonServerSentEvents(
+  response: Response,
+  onEvent: (event: Record<string, unknown>) => void | typeof STOP_READING_SSE | Promise<void | typeof STOP_READING_SSE>,
+): Promise<void> {
   if (!response.body) throw new Error('接口未返回可读取的流式响应')
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let shouldStop = false
 
   const processBlock = async (block: string) => {
     const data = parseServerSentEventBlock(block)
@@ -154,7 +164,8 @@ async function readJsonServerSentEvents(response: Response, onEvent: (event: Rec
     const errorMessage = getStreamEventErrorMessage(event)
     if (errorMessage) throw new Error(errorMessage)
 
-    await onEvent(event)
+    const result = await onEvent(event)
+    if (result === STOP_READING_SSE) shouldStop = true
   }
 
   while (true) {
@@ -168,9 +179,15 @@ async function readJsonServerSentEvents(response: Response, onEvent: (event: Rec
       const separator = buffer.match(/\r?\n\r?\n/)?.[0] ?? '\n\n'
       buffer = buffer.slice(separatorIndex + separator.length)
       await processBlock(block)
+      if (shouldStop) {
+        await reader.cancel()
+        return
+      }
       separatorIndex = buffer.search(/\r?\n\r?\n/)
     }
   }
+
+  if (shouldStop) return
 
   buffer += decoder.decode()
   if (buffer.trim()) await processBlock(buffer)
@@ -229,11 +246,94 @@ function createResponsesInput(prompt: string, inputImageDataUrls: string[]): unk
   ]
 }
 
-function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime: string): Array<{
-  image: string
+type ParsedImageResult = {
+  image?: string
+  url?: string
   actualParams?: Partial<TaskParams>
   revisedPrompt?: string
-}> {
+}
+
+function collectAssistantOutputText(output: ResponsesApiResponse['output']): string {
+  if (!Array.isArray(output)) return ''
+  return output
+    .flatMap((item) => item?.type === 'message' && Array.isArray(item.content) ? item.content : [])
+    .filter((item): item is { type?: string; text?: string } => Boolean(item) && typeof item === 'object')
+    .filter((item) => item.type === 'output_text' && typeof item.text === 'string')
+    .map((item) => item.text!.trim())
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+function extractSvgMarkupFromText(text: string): string | undefined {
+  const fencedMatch = text.match(/```svg\s*([\s\S]*?)```/i)
+  const fencedSvg = fencedMatch?.[1]?.trim()
+  if (fencedSvg?.startsWith('<svg') && fencedSvg.includes('</svg>')) return fencedSvg
+
+  const rawMatch = text.match(/<svg\b[\s\S]*?<\/svg>/i)
+  const rawSvg = rawMatch?.[0]?.trim()
+  if (rawSvg) return rawSvg
+
+  return undefined
+}
+
+function svgMarkupToDataUrl(svgMarkup: string): string {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgMarkup)}`
+}
+
+function getTrimmedString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function getResponsesImageResultCandidate(result: ResponsesOutputItem['result'], depth = 0): { image?: string; url?: string } | undefined {
+  if (depth > 6 || result == null) return undefined
+
+  if (typeof result === 'string') {
+    const value = result.trim()
+    if (!value) return undefined
+    return isHttpUrl(value) || isDataUrl(value) ? { url: value } : { image: value }
+  }
+
+  if (Array.isArray(result)) {
+    for (const item of result) {
+      const candidate = getResponsesImageResultCandidate(item, depth + 1)
+      if (candidate) return candidate
+    }
+    return undefined
+  }
+
+  if (!isRecordValue(result)) return undefined
+
+  const base64Keys = ['b64_json', 'base64'] as const
+  for (const key of base64Keys) {
+    const value = getTrimmedString(result[key])
+    if (value) return { image: value }
+  }
+
+  const directKeys = ['image', 'data', 'result', 'url', 'image_url', 'imageUrl', 'href', 'download_url', 'downloadUrl'] as const
+  for (const key of directKeys) {
+    const value = getTrimmedString(result[key])
+    if (!value) continue
+    return isHttpUrl(value) || isDataUrl(value) ? { url: value } : { image: value }
+  }
+
+  const nestedKeys = ['image', 'data', 'images', 'result', 'results', 'output', 'outputs', 'items', 'file', 'files', 'content'] as const
+  for (const key of nestedKeys) {
+    if (!(key in result)) continue
+    const candidate = getResponsesImageResultCandidate(result[key], depth + 1)
+    if (candidate) return candidate
+  }
+
+  for (const value of Object.values(result)) {
+    if (typeof value === 'object' && value != null) {
+      const candidate = getResponsesImageResultCandidate(value, depth + 1)
+      if (candidate) return candidate
+    }
+  }
+
+  return undefined
+}
+
+function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime: string): ParsedImageResult[] {
   const output = payload.output
   if (!Array.isArray(output) || !output.length) {
     const err = new Error('接口未返回图片数据')
@@ -241,15 +341,16 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
     throw err
   }
 
-  const results: Array<{ image: string; actualParams?: Partial<TaskParams>; revisedPrompt?: string }> = []
+  const results: ParsedImageResult[] = []
 
   for (const item of output) {
     if (item?.type !== 'image_generation_call') continue
 
-    const b64 = getResponsesImageResultBase64(item.result)
-    if (b64) {
+    const candidate = getResponsesImageResultCandidate(item.result)
+    if (candidate?.image || candidate?.url) {
       results.push({
-        image: normalizeBase64Image(b64, fallbackMime),
+        image: candidate.image ? normalizeBase64Image(candidate.image, fallbackMime) : undefined,
+        url: candidate.url,
         actualParams: mergeActualParams(pickActualParams(item)),
         revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined,
       })
@@ -257,7 +358,18 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
   }
 
   if (!results.length) {
-    const err = new Error('接口没有返回可识别的图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
+    const assistantText = collectAssistantOutputText(output)
+    const svgMarkup = assistantText ? extractSvgMarkupFromText(assistantText) : undefined
+    if (svgMarkup) {
+      return [{
+        image: svgMarkupToDataUrl(svgMarkup),
+      }]
+    }
+
+    const message = assistantText
+      ? `接口没有返回 image_generation_call，服务商实际返回了纯文本助手消息而非图片结果：${assistantText}`
+      : '接口没有返回可识别的图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。'
+    const err = new Error(message)
     ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
     throw err
   }
@@ -265,25 +377,91 @@ function parseResponsesImageResults(payload: ResponsesApiResponse, fallbackMime:
   return results
 }
 
-function getResponsesImageResultBase64(result: ResponsesOutputItem['result']): string | undefined {
-  const b64 = typeof result === 'string'
-    ? result
-    : result && typeof result === 'object'
-    ? typeof result.b64_json === 'string'
-      ? result.b64_json
-      : typeof result.base64 === 'string'
-      ? result.base64
-      : typeof result.image === 'string'
-      ? result.image
-      : typeof result.data === 'string'
-      ? result.data
-      : ''
-    : ''
+function createImageUrlProxyResolver(profile: ApiProfile, proxyConfig: ReturnType<typeof readClientDevProxyConfig>, useApiProxy: boolean): ((url: string) => string) | undefined {
+  if (!useApiProxy) return undefined
 
-  return b64.trim() ? b64 : undefined
+  let upstreamOrigin = ''
+  try {
+    upstreamOrigin = new URL(normalizeBaseUrl(profile.baseUrl)).origin
+  } catch {
+    return undefined
+  }
+  if (!upstreamOrigin) return undefined
+
+  if (typeof window !== 'undefined' && window.location.origin === upstreamOrigin) {
+    return undefined
+  }
+
+  const proxyPrefix = proxyConfig?.prefix ?? '/api-proxy'
+  return (url: string) => {
+    if (!isHttpUrl(url)) return url
+    try {
+      const parsed = new URL(url)
+      if (parsed.origin !== upstreamOrigin) return url
+      return `${proxyPrefix}${parsed.pathname}${parsed.search}${parsed.hash}`
+    } catch {
+      return url
+    }
+  }
 }
 
-async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
+async function resolveParsedImageResults(
+  results: ParsedImageResult[],
+  mime: string,
+  signal?: AbortSignal,
+  resolveImageUrl?: (url: string) => string,
+  rawPayload?: unknown,
+): Promise<CallApiResult> {
+  const images: string[] = []
+  const actualParamsList: Array<Partial<TaskParams> | undefined> = []
+  const revisedPrompts: Array<string | undefined> = []
+  const rawImageUrls: string[] = []
+
+  try {
+    for (const item of results) {
+      if (item.url) {
+        rawImageUrls.push(item.url)
+        images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal, resolveImageUrl?.(item.url)))
+      } else if (item.image) {
+        images.push(item.image)
+      } else {
+        continue
+      }
+
+      actualParamsList.push(mergeActualParams(item.actualParams ?? {}))
+      revisedPrompts.push(item.revisedPrompt)
+    }
+  } catch (err) {
+    if (err instanceof Error) {
+      if (rawImageUrls.length > 0) (err as any).rawImageUrls = rawImageUrls
+      if (rawPayload != null && !(typeof (err as any).rawResponsePayload === 'string')) {
+        ;(err as any).rawResponsePayload = JSON.stringify(rawPayload, null, 2)
+      }
+    }
+    throw err
+  }
+
+  if (!images.length) {
+    const err = new Error('接口没有返回可识别的图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
+    ;(err as any).rawResponsePayload = JSON.stringify(rawPayload ?? results, null, 2)
+    throw err
+  }
+
+  return {
+    images,
+    actualParams: mergeActualParams(actualParamsList[0] ?? {}),
+    actualParamsList,
+    revisedPrompts,
+    ...(rawImageUrls.length ? { rawImageUrls } : {}),
+  }
+}
+
+async function parseImagesApiResponse(
+  payload: ImageApiResponse,
+  mime: string,
+  signal?: AbortSignal,
+  resolveImageUrl?: (url: string) => string,
+): Promise<CallApiResult> {
   const data = payload.data
   if (!Array.isArray(data) || !data.length) {
     const err = new Error('接口没有返回图片数据，请查看原始响应内容确认服务商实际返回的数据结构。如果使用的是中转或兼容接口，建议创建并使用「自定义服务商」配置。')
@@ -304,13 +482,14 @@ async function parseImagesApiResponse(payload: ImageApiResponse, mime: string, s
       }
 
       if (isHttpUrl(item.url) || isDataUrl(item.url)) {
-        images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal))
+        images.push(await fetchImageUrlAsDataUrl(item.url, mime, signal, isHttpUrl(item.url) ? resolveImageUrl?.(item.url) : undefined))
         revisedPrompts.push(typeof item.revised_prompt === 'string' ? item.revised_prompt : undefined)
       }
     }
   } catch (err) {
-    if (rawImageUrls.length > 0 && err instanceof Error) {
-      (err as any).rawImageUrls = rawImageUrls
+    if (err instanceof Error) {
+      if (rawImageUrls.length > 0) (err as any).rawImageUrls = rawImageUrls
+      ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
     }
     throw err
   }
@@ -420,6 +599,7 @@ async function parseResponsesApiStreamResponse(
   response: Response,
   mime: string,
   onPartialImage?: CallApiOptions['onPartialImage'],
+  resolveImageUrl?: (url: string) => string,
 ): Promise<CallApiResult> {
   let completedPayload: ResponsesApiResponse | null = null
   const outputItems: ResponsesOutputItem[] = []
@@ -446,6 +626,9 @@ async function parseResponsesApiStreamResponse(
     }
 
     completedPayload = payload
+    if (type === 'response.completed' || type === 'response.failed' || type === 'response.incomplete') {
+      return STOP_READING_SSE
+    }
   })
 
   const payload = completedPayload ?? (outputItems.length ? { output: outputItems } : null)
@@ -455,17 +638,11 @@ async function parseResponsesApiStreamResponse(
   try {
     imageResults = parseResponsesImageResults(payload, mime)
   } catch (err) {
-    const collectedImageItems = outputItems.filter((item) => getResponsesImageResultBase64(item.result))
+    const collectedImageItems = outputItems.filter((item) => getResponsesImageResultCandidate(item.result))
     if (collectedImageItems.length === 0) throw err
     imageResults = parseResponsesImageResults({ output: collectedImageItems }, mime)
   }
-  const actualParams = mergeActualParams(imageResults[0]?.actualParams ?? {})
-  return {
-    images: imageResults.map((result) => result.image),
-    actualParams,
-    actualParamsList: imageResults.map((result) => mergeActualParams(result.actualParams ?? {})),
-    revisedPrompts: imageResults.map((result) => result.revisedPrompt),
-  }
+  return resolveParsedImageResults(imageResults, mime, undefined, resolveImageUrl, payload)
 }
 
 export async function callOpenAICompatibleImageApi(opts: CallApiOptions, profile: ApiProfile, customProvider?: CustomProviderDefinition | null): Promise<CallApiResult> {
@@ -473,9 +650,7 @@ export async function callOpenAICompatibleImageApi(opts: CallApiOptions, profile
     return callCustomHttpImageApi(opts, profile, customProvider)
   }
 
-  return profile.apiMode === 'responses'
-    ? callResponsesImageApi(opts, profile)
-    : callImagesApi(opts, profile)
+  return callImagesApi(opts, { ...profile, apiMode: 'images', responseFormatB64Json: false })
 }
 
 async function callImagesApi(opts: CallApiOptions, profile: ApiProfile, customProvider?: CustomProviderDefinition | null): Promise<CallApiResult> {
@@ -539,8 +714,9 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
   const isEdit = inputImageDataUrls.length > 0
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
-  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
-  const requestHeaders = createRequestHeaders(profile)
+  const useApiProxy = isLimitedFreeApiKey(profile.apiKey) || shouldUseApiProxy(profile.apiProxy, proxyConfig)
+  const resolveImageUrl = createImageUrlProxyResolver(profile, proxyConfig, useApiProxy)
+  const requestHeaders = createRequestHeaders(profile, useApiProxy)
   const paths = createOpenAICompatiblePaths(customProvider)
 
   const controller = new AbortController()
@@ -566,9 +742,6 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
       }
       if (params.n > 1) {
         formData.append('n', String(params.n))
-      }
-      if (profile.responseFormatB64Json) {
-        formData.append('response_format', 'b64_json')
       }
       if (profile.streamImages) {
         formData.append('stream', 'true')
@@ -603,13 +776,13 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
         formData.append('mask', maskBlob, 'mask.png')
       }
 
-      response = await fetch(buildApiUrl(profile.baseUrl, paths.editPath, proxyConfig, useApiProxy), {
+      response = await tracedFetch(buildApiUrl(profile.baseUrl, paths.editPath, proxyConfig, useApiProxy), {
         method: 'POST',
         headers: requestHeaders,
         cache: 'no-store',
         body: formData,
         signal: controller.signal,
-      })
+      }, traceMeta(profile, useApiProxy, 'images-edits'))
     } else {
       const body: Record<string, unknown> = {
         model: profile.model,
@@ -629,15 +802,12 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
       if (params.n > 1) {
         body.n = params.n
       }
-      if (profile.responseFormatB64Json) {
-        body.response_format = 'b64_json'
-      }
       if (profile.streamImages) {
         body.stream = true
         body.partial_images = getStreamPartialImages(profile)
       }
 
-      response = await fetch(buildApiUrl(profile.baseUrl, paths.generationPath, proxyConfig, useApiProxy), {
+      response = await tracedFetch(buildApiUrl(profile.baseUrl, paths.generationPath, proxyConfig, useApiProxy), {
         method: 'POST',
         headers: {
           ...requestHeaders,
@@ -646,7 +816,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
         cache: 'no-store',
         body: JSON.stringify(body),
         signal: controller.signal,
-      })
+      }, traceMeta(profile, useApiProxy, 'images-generations'))
     }
 
     if (!response.ok) {
@@ -657,7 +827,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
       return parseImagesApiStreamResponse(response, mime, opts.onPartialImage)
     }
 
-    return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal)
+    return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal, resolveImageUrl)
   } finally {
     clearTimeout(timeoutId)
   }
@@ -787,7 +957,13 @@ async function createCustomMultipartBody(mapping: CustomProviderSubmitMapping, o
   return formData
 }
 
-async function extractCustomImages(payload: unknown, result: CustomProviderResultMapping, mime: string, signal?: AbortSignal): Promise<CallApiResult> {
+async function extractCustomImages(
+  payload: unknown,
+  result: CustomProviderResultMapping,
+  mime: string,
+  signal?: AbortSignal,
+  resolveImageUrl?: (url: string) => string,
+): Promise<CallApiResult> {
   const images: string[] = []
   const imageUrls = (result.imageUrlPaths ?? []).flatMap((path) =>
     getAllByPath(payload, path).filter((value): value is string => isHttpUrl(value) || isDataUrl(value)),
@@ -800,11 +976,12 @@ async function extractCustomImages(payload: unknown, result: CustomProviderResul
       }
     }
     for (const url of imageUrls) {
-      images.push(await fetchImageUrlAsDataUrl(url, mime, signal))
+      images.push(await fetchImageUrlAsDataUrl(url, mime, signal, isHttpUrl(url) ? resolveImageUrl?.(url) : undefined))
     }
   } catch (err) {
-    if (rawImageUrls.length > 0 && err instanceof Error) {
-      (err as any).rawImageUrls = rawImageUrls
+    if (err instanceof Error) {
+      if (rawImageUrls.length > 0) (err as any).rawImageUrls = rawImageUrls
+      ;(err as any).rawResponsePayload = JSON.stringify(payload, null, 2)
     }
     throw err
   }
@@ -818,7 +995,7 @@ async function extractCustomImages(payload: unknown, result: CustomProviderResul
 }
 
 async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: CallApiOptions, profile: ApiProfile, controller: AbortController, proxyConfig: ReturnType<typeof readClientDevProxyConfig>, useApiProxy: boolean): Promise<unknown> {
-  const requestHeaders = createRequestHeaders(profile)
+  const requestHeaders = createRequestHeaders(profile, useApiProxy)
   const context = createCustomProviderContext(opts, profile)
   const method = mapping.method ?? 'POST'
   const contentType = mapping.contentType ?? 'json'
@@ -829,9 +1006,6 @@ async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: C
   if (method !== 'GET') {
     if (contentType === 'multipart') {
       const formData = await createCustomMultipartBody(mapping, opts, context)
-      if (profile.responseFormatB64Json) {
-        formData.append('response_format', 'b64_json')
-      }
       body = formData
     } else {
       assertImageInputPayloadSize(
@@ -840,20 +1014,17 @@ async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: C
       )
       headers['Content-Type'] = 'application/json'
       const resolved = resolveTemplateValue(mapping.body ?? {}, context)
-      if (profile.responseFormatB64Json && resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
-        (resolved as Record<string, unknown>).response_format = 'b64_json'
-      }
       body = JSON.stringify(resolved)
     }
   }
 
-  const response = await fetch(buildApiUrl(profile.baseUrl, path, proxyConfig, useApiProxy), {
+  const response = await tracedFetch(buildApiUrl(profile.baseUrl, path, proxyConfig, useApiProxy), {
     method,
     headers,
     cache: 'no-store',
     body,
     signal: controller.signal,
-  })
+  }, traceMeta(profile, useApiProxy, 'custom-submit'))
 
   if (!response.ok) throw new Error(await getApiErrorMessage(response))
   return response.json()
@@ -867,7 +1038,8 @@ async function pollCustomTaskResult(
   signal?: AbortSignal,
 ): Promise<CallApiResult> {
   const proxyConfig = readClientDevProxyConfig()
-  const requestHeaders = createRequestHeaders(profile)
+  const requestHeaders = createRequestHeaders(profile, false)
+  const resolveImageUrl = createImageUrlProxyResolver(profile, proxyConfig, false)
   let isFirstPoll = true
 
   while (true) {
@@ -882,12 +1054,12 @@ async function pollCustomTaskResult(
     const taskPath = appendQuery(buildTaskPath(poll.path, taskId), poll.query)
     let taskPayload: unknown
     try {
-      const taskResponse = await fetch(buildApiUrl(profile.baseUrl, taskPath, proxyConfig, false), {
+      const taskResponse = await tracedFetch(buildApiUrl(profile.baseUrl, taskPath, proxyConfig, false), {
         method: poll.method ?? 'GET',
         headers: requestHeaders,
         cache: 'no-store',
         signal,
-      })
+      }, traceMeta(profile, false, 'custom-poll'))
 
       if (!taskResponse.ok) {
         if (isRetryablePollingStatus(taskResponse.status)) continue
@@ -907,7 +1079,7 @@ async function pollCustomTaskResult(
     }
     if (state === 'success') {
       try {
-        return await extractCustomImages(taskPayload, poll.result, mime, signal)
+        return await extractCustomImages(taskPayload, poll.result, mime, signal, resolveImageUrl)
       } catch (err) {
         if (!signal?.aborted && isRecoverablePollingError(err)) continue
         throw err
@@ -936,7 +1108,7 @@ async function callCustomHttpImageApi(opts: CallApiOptions, profile: ApiProfile,
 
   try {
     const proxyConfig = readClientDevProxyConfig()
-    const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
+    const useApiProxy = isLimitedFreeApiKey(profile.apiKey) || shouldUseApiProxy(profile.apiProxy, proxyConfig)
     const submitMapping = isEdit && customProvider.editSubmit ? customProvider.editSubmit : customProvider.submit
     if (useApiProxy && (submitMapping.method ?? 'POST') !== 'POST') {
       throw new Error('API 代理暂不支持使用 GET 提交的自定义服务商。请关闭 API 代理，或改用 POST 提交的自定义服务商配置。')
@@ -1009,8 +1181,9 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
   const { prompt, params, inputImageDataUrls } = opts
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
-  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
-  const requestHeaders = createRequestHeaders(profile)
+  const useApiProxy = isLimitedFreeApiKey(profile.apiKey) || shouldUseApiProxy(profile.apiProxy, proxyConfig)
+  const resolveImageUrl = createImageUrlProxyResolver(profile, proxyConfig, useApiProxy)
+  const requestHeaders = createRequestHeaders(profile, useApiProxy)
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
 
@@ -1034,7 +1207,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       body.stream = true
     }
 
-    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
+    const response = await tracedFetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
       method: 'POST',
       headers: {
         ...requestHeaders,
@@ -1043,29 +1216,19 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       cache: 'no-store',
       body: JSON.stringify(body),
       signal: controller.signal,
-    })
+    }, traceMeta(profile, useApiProxy, 'responses-image'))
 
     if (!response.ok) {
       throw new Error(await getApiErrorMessage(response))
     }
 
     if (profile.streamImages && isEventStreamResponse(response)) {
-      return parseResponsesApiStreamResponse(response, mime, opts.onPartialImage)
+      return parseResponsesApiStreamResponse(response, mime, opts.onPartialImage, resolveImageUrl)
     }
 
     const payload = await response.json() as ResponsesApiResponse
     const imageResults = parseResponsesImageResults(payload, mime)
-    const actualParams = mergeActualParams(
-      imageResults[0]?.actualParams ?? {},
-    )
-    return {
-      images: imageResults.map((result) => result.image),
-      actualParams,
-      actualParamsList: imageResults.map((result) =>
-        mergeActualParams(result.actualParams ?? {}),
-      ),
-      revisedPrompts: imageResults.map((result) => result.revisedPrompt),
-    }
+    return resolveParsedImageResults(imageResults, mime, controller.signal, resolveImageUrl, payload)
   } finally {
     clearTimeout(timeoutId)
   }
