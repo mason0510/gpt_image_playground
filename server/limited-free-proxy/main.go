@@ -134,6 +134,13 @@ func newProxyHandler(cfg config) http.Handler {
 		}
 
 		limitedFree := isLimitedFreeRequest(r)
+		var limitedFreeReservation *quotaReservation
+		limitedFreeChargeable := false
+		defer func() {
+			if limitedFreeReservation != nil && !limitedFreeChargeable {
+				limitedFreeReservation.Rollback()
+			}
+		}()
 		if limitedFree {
 			if cfg.LimitedFreeKey == "" {
 				writeProxyError(w, http.StatusServiceUnavailable, "限时免费 key 暂不可用，请填写自己的 API Key")
@@ -172,7 +179,7 @@ func newProxyHandler(cfg config) http.Handler {
 					})
 					return
 				}
-				result := limiter.Allow(r, delta)
+				result := limiter.Reserve(r, delta)
 				if !result.Allowed {
 					writeJSON(w, http.StatusTooManyRequests, map[string]any{
 						"error": map[string]any{
@@ -183,6 +190,7 @@ func newProxyHandler(cfg config) http.Handler {
 					})
 					return
 				}
+				limitedFreeReservation = result.Reservation
 			}
 		}
 
@@ -212,19 +220,38 @@ func newProxyHandler(cfg config) http.Handler {
 		}
 		defer resp.Body.Close()
 
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Printf("read_response_error method=%s path=%s err=%v", r.Method, sanitizePath(r.URL), err)
+			writeProxyError(w, http.StatusBadGateway, "上游响应读取失败")
+			return
+		}
+		if limitedFreeReservation != nil && isChargeableLimitedFreeResponse(resp.StatusCode, resp.Header, respBody) {
+			limitedFreeChargeable = true
+		}
+
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		if _, err := io.Copy(w, resp.Body); err != nil {
+		if _, err := w.Write(respBody); err != nil {
 			log.Printf("copy_response_error method=%s path=%s err=%v", r.Method, sanitizePath(r.URL), err)
 		}
 	})
 }
 
 type allowResult struct {
-	Allowed   bool
-	Limit     int
-	Used      int
-	Remaining int
+	Allowed     bool
+	Limit       int
+	Used        int
+	Remaining   int
+	Reservation *quotaReservation
+}
+
+type quotaReservation struct {
+	limiter *freeUsageLimiter
+	key     string
+	day     string
+	delta   int
+	once    sync.Once
 }
 
 func newFreeUsageLimiter(cfg config) *freeUsageLimiter {
@@ -248,7 +275,7 @@ func newFreeUsageLimiter(cfg config) *freeUsageLimiter {
 	return limiter
 }
 
-func (l *freeUsageLimiter) Allow(r *http.Request, delta int) allowResult {
+func (l *freeUsageLimiter) Reserve(r *http.Request, delta int) allowResult {
 	if delta < 1 {
 		delta = 1
 	}
@@ -268,7 +295,36 @@ func (l *freeUsageLimiter) Allow(r *http.Request, delta int) allowResult {
 	record.Count += delta
 	l.records[key] = record
 	l.saveLocked()
-	return allowResult{Allowed: true, Limit: l.dailyMax, Used: record.Count, Remaining: maxInt(0, l.dailyMax-record.Count)}
+	return allowResult{
+		Allowed:     true,
+		Limit:       l.dailyMax,
+		Used:        record.Count,
+		Remaining:   maxInt(0, l.dailyMax-record.Count),
+		Reservation: &quotaReservation{limiter: l, key: key, day: today, delta: delta},
+	}
+}
+
+func (r *quotaReservation) Rollback() {
+	if r == nil || r.limiter == nil {
+		return
+	}
+	r.once.Do(func() {
+		l := r.limiter
+		l.mu.Lock()
+		defer l.mu.Unlock()
+
+		record := l.records[r.key]
+		if record.Day != r.day {
+			return
+		}
+		record.Count = maxInt(0, record.Count-r.delta)
+		if record.Count == 0 {
+			delete(l.records, r.key)
+		} else {
+			l.records[r.key] = record
+		}
+		l.saveLocked()
+	})
 }
 
 func (l *freeUsageLimiter) deviceKey(r *http.Request, today string) string {
@@ -373,6 +429,23 @@ func parseImageCount(value any) int {
 		}
 	}
 	return 1
+}
+
+func isChargeableLimitedFreeResponse(status int, headers http.Header, body []byte) bool {
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return false
+	}
+	contentType := strings.ToLower(headers.Get("Content-Type"))
+	if contentType != "" && !strings.Contains(contentType, "json") {
+		return len(body) > 0
+	}
+	var payload struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	return len(payload.Data) > 0
 }
 
 func maxInt(a, b int) int {

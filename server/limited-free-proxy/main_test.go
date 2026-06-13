@@ -89,14 +89,14 @@ func TestLimitedFreeResetsAcrossDays(t *testing.T) {
 		now:       func() time.Time { return time.Date(2026, 6, 10, 10, 0, 0, 0, time.Local) },
 	}
 	req := limitedFreeJSONRequest(t, `{}`)
-	if !limiter.Allow(req, 1).Allowed {
+	if !limiter.Reserve(req, 1).Allowed {
 		t.Fatal("first day first request should be allowed")
 	}
-	if limiter.Allow(req, 1).Allowed {
+	if limiter.Reserve(req, 1).Allowed {
 		t.Fatal("first day second request should be rejected")
 	}
 	limiter.now = func() time.Time { return time.Date(2026, 6, 11, 10, 0, 0, 0, time.Local) }
-	if !limiter.Allow(req, 1).Allowed {
+	if !limiter.Reserve(req, 1).Allowed {
 		t.Fatal("next day request should be allowed")
 	}
 }
@@ -196,4 +196,82 @@ func limitedFreeJSONRequest(t *testing.T, body string) *http.Request {
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "203.0.113.10:12345"
 	return req
+}
+
+func TestLimitedFreeFailedUpstreamDoesNotConsumeDailyQuota(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		if upstreamHits == 1 {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"message": "upstream failed"}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"b64_json": "ok"}}})
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	handler := newProxyHandler(config{
+		UpstreamBase:        upstreamURL,
+		LimitedFreeKey:      "test-free-key",
+		LimitedFreeDailyMax: 1,
+		RateLimitSalt:       "test-salt",
+		RateLimitStorePath:  filepath.Join(t.TempDir(), "usage.json"),
+	})
+
+	failedResp := httptest.NewRecorder()
+	handler.ServeHTTP(failedResp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if failedResp.Code != http.StatusInternalServerError {
+		t.Fatalf("failed upstream status=%d body=%s", failedResp.Code, failedResp.Body.String())
+	}
+
+	successResp := httptest.NewRecorder()
+	handler.ServeHTTP(successResp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if successResp.Code != http.StatusOK {
+		t.Fatalf("success after failed request should still be allowed, status=%d body=%s", successResp.Code, successResp.Body.String())
+	}
+
+	overflowResp := httptest.NewRecorder()
+	handler.ServeHTTP(overflowResp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if overflowResp.Code != http.StatusTooManyRequests {
+		t.Fatalf("successful request should consume quota; overflow status=%d body=%s", overflowResp.Code, overflowResp.Body.String())
+	}
+	if upstreamHits != 2 {
+		t.Fatalf("overflow should not reach upstream, upstreamHits=%d", upstreamHits)
+	}
+}
+
+func TestLimitedFreeEmptySuccessBodyDoesNotConsumeDailyQuota(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		if upstreamHits == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"b64_json": "ok"}}})
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	handler := newProxyHandler(config{
+		UpstreamBase:        upstreamURL,
+		LimitedFreeKey:      "test-free-key",
+		LimitedFreeDailyMax: 1,
+		RateLimitSalt:       "test-salt",
+		RateLimitStorePath:  filepath.Join(t.TempDir(), "usage.json"),
+	})
+
+	emptyResp := httptest.NewRecorder()
+	handler.ServeHTTP(emptyResp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if emptyResp.Code != http.StatusOK {
+		t.Fatalf("empty upstream status=%d body=%s", emptyResp.Code, emptyResp.Body.String())
+	}
+
+	successResp := httptest.NewRecorder()
+	handler.ServeHTTP(successResp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if successResp.Code != http.StatusOK {
+		t.Fatalf("success after empty response should still be allowed, status=%d body=%s", successResp.Code, successResp.Body.String())
+	}
 }
