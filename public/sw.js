@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gpt-image-playground-v0.1.34'
+const CACHE_NAME = 'gpt-image-playground-v0.1.35'
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './pwa-icon.svg']
 
 self.addEventListener('install', (event) => {
