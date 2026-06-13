@@ -146,23 +146,50 @@ export async function fetchImageUrlAsDataUrl(url: string, fallbackMime: string, 
   return blobToDataUrl(blob, fallbackMime)
 }
 
+function pickJsonErrorMessage(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  const error = record.error
+  if (error && typeof error === 'object' && !Array.isArray(error)) {
+    const message = (error as Record<string, unknown>).message
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  if (typeof record.detail === 'string' && record.detail.trim()) return record.detail
+  if (Array.isArray(record.detail)) {
+    const detail = record.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n').trim()
+    if (detail) return detail
+  }
+  if (typeof error === 'string' && error.trim()) return error
+  if (typeof record.message === 'string' && record.message.trim()) return record.message
+  return undefined
+}
+
+export function normalizeApiErrorMessage(message: string): string {
+  const text = message.trim()
+  if (!text) return '服务返回了空响应，请稍后重试'
+  if (/Unexpected end of JSON input|Failed to execute 'json' on 'Response'/i.test(text)) {
+    return '服务返回了空响应，请稍后重试'
+  }
+  return text
+}
+
 export async function getApiErrorMessage(response: Response): Promise<string> {
   let errorMsg = `HTTP ${response.status}`
-  try {
-    const errJson = await response.json()
-    if (errJson.error?.message) errorMsg = errJson.error.message
-    else if (typeof errJson.detail === 'string') errorMsg = errJson.detail
-    else if (Array.isArray(errJson.detail)) errorMsg = errJson.detail.map((item: unknown) => typeof item === 'string' ? item : JSON.stringify(item)).join('\n')
-    else if (typeof errJson.error === 'string') errorMsg = errJson.error
-    else if (errJson.message) errorMsg = errJson.message
-  } catch {
+  const text = await response.text().catch(() => '')
+  const trimmed = text.trim()
+
+  if (!trimmed) {
+    errorMsg = `服务返回了空错误响应（HTTP ${response.status}）`
+  } else {
     try {
-      errorMsg = await response.text()
+      const errJson = JSON.parse(trimmed)
+      errorMsg = pickJsonErrorMessage(errJson) ?? trimmed
     } catch {
-      /* ignore */
+      errorMsg = trimmed.length > 500 ? `${trimmed.slice(0, 500)}...` : trimmed
     }
   }
-  return formatHttpApiErrorMessage(errorMsg, getApiTraceIdFromResponse(response))
+
+  return formatHttpApiErrorMessage(normalizeApiErrorMessage(errorMsg), getApiTraceIdFromResponse(response))
 }
 
 export async function readJsonResponse<T = unknown>(response: Response, fallbackMessage = '服务返回了空响应，请稍后重试'): Promise<T> {

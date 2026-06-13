@@ -114,7 +114,7 @@ func TestLimitedFreeRejectsTooManyImagesPerRequest(t *testing.T) {
 	handler := newProxyHandler(config{
 		UpstreamBase:        upstreamURL,
 		LimitedFreeKey:      "real-free-key",
-		LimitedFreeDailyMax: 30,
+		LimitedFreeDailyMax: 10,
 		RateLimitSalt:       "test-salt",
 		RateLimitStorePath:  filepath.Join(t.TempDir(), "usage.json"),
 	})
@@ -152,7 +152,7 @@ func TestLimitedFreeAllowsModelsButRejectsNonImageEndpoints(t *testing.T) {
 	handler := newProxyHandler(config{
 		UpstreamBase:        upstreamURL,
 		LimitedFreeKey:      "real-free-key",
-		LimitedFreeDailyMax: 30,
+		LimitedFreeDailyMax: 10,
 		RateLimitSalt:       "test-salt",
 		RateLimitStorePath:  filepath.Join(t.TempDir(), "usage.json"),
 	})

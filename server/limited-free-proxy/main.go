@@ -26,7 +26,7 @@ const (
 	limitedFreeHeader   = "X-Imagination-Space-Key-Mode"
 	limitedFreeValue    = "limited-free"
 	deviceHeader        = "X-Imagination-Space-Device-Fingerprint"
-	defaultDailyLimit   = 30
+	defaultDailyLimit   = 10
 	maxImagesPerRequest = 4
 )
 
