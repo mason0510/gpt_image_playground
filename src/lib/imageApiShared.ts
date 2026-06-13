@@ -165,6 +165,20 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
   return formatHttpApiErrorMessage(errorMsg, getApiTraceIdFromResponse(response))
 }
 
+export async function readJsonResponse<T = unknown>(response: Response, fallbackMessage = '服务返回了空响应，请稍后重试'): Promise<T> {
+  const text = await response.text()
+  const trimmed = text.trim()
+  if (!trimmed) {
+    throw new Error(formatHttpApiErrorMessage(fallbackMessage, getApiTraceIdFromResponse(response)))
+  }
+  try {
+    return JSON.parse(trimmed) as T
+  } catch {
+    const preview = trimmed.length > 240 ? `${trimmed.slice(0, 240)}...` : trimmed
+    throw new Error(formatHttpApiErrorMessage(`服务返回内容不是有效 JSON：${preview}`, getApiTraceIdFromResponse(response)))
+  }
+}
+
 export function pickActualParams(source: unknown): Partial<TaskParams> {
   if (!source || typeof source !== 'object') return {}
   const record = source as Record<string, unknown>

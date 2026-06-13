@@ -1726,7 +1726,7 @@ export default function SettingsModal() {
               {/* 5. API Key */}
               <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
-                  API Key <span className="text-xs font-normal text-gray-400 dark:text-gray-500">（建议使用 <a href="https://sub-lb.tap365.org/keys" target="_blank" rel="noopener noreferrer" className="text-blue-500 underline-offset-2 hover:underline dark:text-blue-400">gpt-img-advanced</a> 分组来执行）</span>
+                  使用方式 <span className="text-xs font-normal text-gray-400 dark:text-gray-500">（默认可直接用免费模式；你也可以随时切到自己的平台）</span>
                 </span>
                 {canUseLimitedFreeKey && (
                   <div className="mb-2">
@@ -1734,15 +1734,15 @@ export default function SettingsModal() {
                       value={apiKeySource}
                       onChange={handleApiKeySourceChange}
                       options={[
+                        { label: '限时免费（默认）', value: 'limited-free' },
                         { label: '自定义 API Key', value: 'custom' },
-                        { label: '限时免费 key', value: 'limited-free' },
                       ]}
                     />
                   </div>
                 )}
                 {apiKeySource === 'limited-free' ? (
                   <div className="rounded-xl border border-blue-200/70 bg-blue-50/80 px-3 py-2.5 text-xs leading-5 text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200">
-                    已选择限时免费 key：请求将通过站内同源代理转发，由服务器使用内置 key；页面不会保存或展示真实 key。正常使用范围内免费，超出保护范围后请明天再试或切换自己的 API Key。
+                    现在就是限时免费模式：直接用就行。请求会通过站内代理转发，页面不会展示真实 key。要改成你自己的 API Key、Base URL 或其他平台，再切到「自定义 API Key」即可。
                   </div>
                 ) : (
                   <div className="relative">
@@ -1778,8 +1778,8 @@ export default function SettingsModal() {
                 )}
                 <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
                   {apiKeySource === 'limited-free'
-                    ? '免费额度由服务器按设备指纹限流；如需更多额度，切回“自定义 API Key”后填写。'
-                    : <>支持通过查询参数覆盖：<code className="bg-gray-100 dark:bg-white/[0.06] px-1 py-0.5 rounded">?apiKey=</code></>}
+                    ? '默认建议直接用这个模式；如果你有自己的 OpenAI 兼容接口、SubLB 或其他平台，再切到自定义。'
+                    : <>这里填你自己的 API Key；也支持配合上面的 API URL / Base URL 使用。建议使用 <a href="https://sub-lb.tap365.org/keys" target="_blank" rel="noopener noreferrer" className="text-blue-500 underline-offset-2 hover:underline dark:text-blue-400">gpt-img-advanced</a> 分组来执行。</>}
                 </div>
               </div>
 

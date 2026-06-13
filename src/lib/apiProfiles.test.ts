@@ -62,11 +62,15 @@ describe('validateApiProfile', () => {
     expect(DEFAULT_SETTINGS.profiles[0].apiKey).toBe(LIMITED_FREE_API_KEY_SENTINEL)
   })
 
-  it('defaults built-in Responses profiles to the stable responses model', () => {
-    expect(createDefaultOpenAIProfile({
+  it('forces built-in OpenAI-compatible profiles to use images mode', () => {
+    const profile = createDefaultOpenAIProfile({
       apiMode: 'responses',
       apiKey: 'test-key',
-    }).model).toBe(DEFAULT_RESPONSES_MODEL)
+      model: DEFAULT_RESPONSES_MODEL,
+    })
+
+    expect(profile.apiMode).toBe('images')
+    expect(profile.model).toBe(DEFAULT_RESPONSES_MODEL)
   })
 })
 
@@ -114,7 +118,7 @@ describe('normalizeSettings api proxy migration', () => {
   })
 
   it.each(['gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'gpt-4o-mini'])(
-    'rewrites unstable built-in Responses model %s to gpt-5.5',
+    'forces built-in OpenAI-compatible profile %s back to images mode during normalization',
     (model) => {
       const settings = normalizeSettings({
         profiles: [
@@ -134,12 +138,14 @@ describe('normalizeSettings api proxy migration', () => {
         activeProfileId: 'sublb-1',
       })
 
-      expect(settings.profiles[0].model).toBe(DEFAULT_RESPONSES_MODEL)
-      expect(settings.model).toBe(DEFAULT_RESPONSES_MODEL)
+      expect(settings.profiles[0].apiMode).toBe('images')
+      expect(settings.profiles[0].model).toBe(model)
+      expect(settings.apiMode).toBe('images')
+      expect(settings.model).toBe(model)
     },
   )
 
-  it('keeps built-in Responses fallback after stale top-level legacy overrides are re-applied', () => {
+  it('keeps built-in OpenAI-compatible profiles in images mode after stale top-level legacy overrides are re-applied', () => {
     const activeProfile = getActiveApiProfile({
       profiles: [
         {
@@ -160,7 +166,8 @@ describe('normalizeSettings api proxy migration', () => {
       apiMode: 'responses',
     })
 
-    expect(activeProfile.model).toBe(DEFAULT_RESPONSES_MODEL)
+    expect(activeProfile.apiMode).toBe('images')
+    expect(activeProfile.model).toBe('gpt-4.1-mini')
   })
 
   it('does not auto-enable same-origin proxy for custom providers', () => {
@@ -228,7 +235,7 @@ describe('mergeImportedSettings', () => {
       apiKey: 'imported-key',
       model: 'imported-model',
       timeout: 120,
-      apiMode: 'responses',
+      apiMode: 'images',
       codexCli: true,
       apiProxy: true,
     })
@@ -721,12 +728,12 @@ describe('custom providers', () => {
     expect(profile.model).toBe(DEFAULT_IMAGES_MODEL)
   })
 
-  it('enables streaming by default and preserves partial image count', () => {
-    expect(createDefaultOpenAIProfile().streamImages).toBe(true)
+  it('disables streaming by default and preserves partial image count', () => {
+    expect(createDefaultOpenAIProfile().streamImages).toBe(false)
     expect(createDefaultOpenAIProfile().streamPartialImages).toBe(1)
-    expect(DEFAULT_SETTINGS.streamImages).toBe(true)
+    expect(DEFAULT_SETTINGS.streamImages).toBe(false)
     expect(DEFAULT_SETTINGS.streamPartialImages).toBe(1)
-    expect(DEFAULT_SETTINGS.profiles[0].streamImages).toBe(true)
+    expect(DEFAULT_SETTINGS.profiles[0].streamImages).toBe(false)
     expect(DEFAULT_SETTINGS.profiles[0].streamPartialImages).toBe(1)
 
     const normalized = normalizeSettings({
@@ -735,9 +742,9 @@ describe('custom providers', () => {
       ],
     })
 
-    expect(normalized.streamImages).toBe(true)
+    expect(normalized.streamImages).toBe(false)
     expect(normalized.streamPartialImages).toBe(3)
-    expect(normalized.profiles[0].streamImages).toBe(true)
+    expect(normalized.profiles[0].streamImages).toBe(false)
     expect(normalized.profiles[0].streamPartialImages).toBe(3)
 
     const clamped = normalizeSettings({

@@ -18,6 +18,7 @@ import {
   MIME_MAP,
   normalizeBase64Image,
   pickActualParams,
+  readJsonResponse,
 } from './imageApiShared'
 
 const PROMPT_REWRITE_GUARD_PREFIX = 'Use the following text as the complete prompt. Do not rewrite it:'
@@ -827,7 +828,7 @@ async function callImagesApiSingle(opts: CallApiOptions, profile: ApiProfile, cu
       return parseImagesApiStreamResponse(response, mime, opts.onPartialImage)
     }
 
-    return parseImagesApiResponse(await response.json() as ImageApiResponse, mime, controller.signal, resolveImageUrl)
+    return parseImagesApiResponse(await readJsonResponse<ImageApiResponse>(response), mime, controller.signal, resolveImageUrl)
   } finally {
     clearTimeout(timeoutId)
   }
@@ -1027,7 +1028,7 @@ async function submitCustomRequest(mapping: CustomProviderSubmitMapping, opts: C
   }, traceMeta(profile, useApiProxy, 'custom-submit'))
 
   if (!response.ok) throw new Error(await getApiErrorMessage(response))
-  return response.json()
+  return readJsonResponse(response)
 }
 
 async function pollCustomTaskResult(
@@ -1066,7 +1067,7 @@ async function pollCustomTaskResult(
         throw new Error(await getApiErrorMessage(taskResponse))
       }
 
-      taskPayload = await taskResponse.json()
+      taskPayload = await readJsonResponse(taskResponse, '异步任务查询返回空响应，请稍后重试')
     } catch (err) {
       if (!signal?.aborted && isRecoverablePollingError(err)) continue
       throw err
@@ -1226,7 +1227,7 @@ async function callResponsesImageApiSingle(opts: CallApiOptions, profile: ApiPro
       return parseResponsesApiStreamResponse(response, mime, opts.onPartialImage, resolveImageUrl)
     }
 
-    const payload = await response.json() as ResponsesApiResponse
+    const payload = await readJsonResponse<ResponsesApiResponse>(response)
     const imageResults = parseResponsesImageResults(payload, mime)
     return resolveParsedImageResults(imageResults, mime, controller.signal, resolveImageUrl, payload)
   } finally {

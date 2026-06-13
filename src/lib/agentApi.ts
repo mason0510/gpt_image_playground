@@ -2,7 +2,7 @@ import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiP
 import { tracedFetch } from './apiDebugTrace'
 import { createApiAuthorizationHeaders, isLimitedFreeApiKey } from './apiKeyMode'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
-import { getApiErrorMessage, MIME_MAP, normalizeBase64Image, pickActualParams } from './imageApiShared'
+import { getApiErrorMessage, MIME_MAP, normalizeBase64Image, pickActualParams, readJsonResponse } from './imageApiShared'
 
 export interface AgentApiMessage {
   role: 'user' | 'assistant'
@@ -653,7 +653,7 @@ export async function callAgentResponsesApi(opts: {
       return parseAgentStreamResponse(response, mime, controller.signal, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted)
     }
 
-    const payload = await response.json() as ResponsesApiResponse
+    const payload = await readJsonResponse<ResponsesApiResponse>(response)
     throwIfAborted(controller.signal, signal)
     return {
       responseId: payload.id,
@@ -709,7 +709,7 @@ export async function callAgentConversationTitleApi(opts: {
       throw new Error(await getApiErrorMessage(response))
     }
 
-    const payload = await response.json() as ResponsesApiResponse
+    const payload = await readJsonResponse<ResponsesApiResponse>(response)
     return parseAgentConversationTitleXml(extractText(payload))
   } finally {
     clearTimeout(timeoutId)
@@ -877,7 +877,7 @@ export async function callBatchImageSingle(opts: {
     }
 
     // Non-streaming
-    const payload = await response.json() as ResponsesApiResponse
+    const payload = await readJsonResponse<ResponsesApiResponse>(response)
     const images = extractImages(payload, mime)
     const image = images[0] ?? null
     if (image) await onImageToolCompleted?.(image)
