@@ -1,5 +1,5 @@
 import type { AppSettings, TaskParams } from '../types'
-import { formatHttpApiErrorMessage, getApiTraceIdFromResponse } from './apiDebugTrace'
+import { formatHttpApiErrorMessage, getApiTraceContextFromResponse, getApiTraceIdFromResponse } from './apiDebugTrace'
 
 export const MIME_MAP: Record<string, string> = {
   png: 'image/png',
@@ -185,6 +185,31 @@ export function normalizeApiErrorMessage(message: string): string {
   return text
 }
 
+function formatResponseContext(response: Response): string {
+  const parts: string[] = []
+  parts.push(`HTTP 状态码：${response.status}`)
+  const contentType = response.headers.get('Content-Type')?.trim()
+  parts.push(`Content-Type：${contentType || '(空)'}`)
+  const trace = getApiTraceContextFromResponse(response)
+  if (trace) {
+    parts.push(`代理路径：${trace.useApiProxy ? '是（/api-proxy）' : '否（直连）'}`)
+  }
+  const finalUrl = response.url?.trim() || trace?.url?.trim()
+  if (finalUrl) {
+    parts.push(`请求 URL：${finalUrl}`)
+  }
+  return parts.join('；')
+}
+
+function appendResponseContext(message: string, response: Response): string {
+  const normalized = message.trim()
+  const context = formatResponseContext(response)
+  if (!context) return normalized
+  if (!normalized) return context
+  return `${normalized}
+响应上下文：${context}`
+}
+
 export async function getApiErrorMessage(response: Response): Promise<string> {
   let errorMsg = `HTTP ${response.status}`
   const text = await response.text().catch(() => '')
@@ -210,13 +235,13 @@ export async function readJsonResponse<T = unknown>(response: Response, fallback
   const text = await response.text()
   const trimmed = text.trim()
   if (!trimmed) {
-    throw new Error(formatHttpApiErrorMessage(fallbackMessage, getApiTraceIdFromResponse(response)))
+    throw new Error(formatHttpApiErrorMessage(appendResponseContext(fallbackMessage, response), getApiTraceIdFromResponse(response)))
   }
   try {
     return JSON.parse(trimmed) as T
   } catch {
     const preview = trimmed.length > 240 ? `${trimmed.slice(0, 240)}...` : trimmed
-    throw new Error(formatHttpApiErrorMessage(`服务返回内容不是有效 JSON：${preview}`, getApiTraceIdFromResponse(response)))
+    throw new Error(formatHttpApiErrorMessage(appendResponseContext(`服务返回内容不是有效 JSON：${preview}`, response), getApiTraceIdFromResponse(response)))
   }
 }
 

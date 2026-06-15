@@ -1,8 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { getApiErrorMessage, normalizeApiErrorMessage, readJsonResponse } from './imageApiShared'
+import type { ApiTraceContext } from './apiDebugTrace'
 
-function withTrace(response: Response, traceId: string): Response {
+function withTrace(response: Response, traceId: string, traceContext?: Partial<ApiTraceContext>): Response {
   ;(response as Response & { __apiTraceId?: string }).__apiTraceId = traceId
+  if (traceContext) {
+    ;(response as Response & { __apiTraceContext?: ApiTraceContext }).__apiTraceContext = {
+      traceId,
+      startedAt: 0,
+      method: 'POST',
+      url: '/api-proxy/v1/images/generations',
+      useApiProxy: true,
+      ...traceContext,
+    }
+  }
   return response
 }
 

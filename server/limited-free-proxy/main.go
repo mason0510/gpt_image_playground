@@ -226,6 +226,18 @@ func newProxyHandler(cfg config) http.Handler {
 			writeProxyError(w, http.StatusBadGateway, "上游响应读取失败")
 			return
 		}
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && len(bytes.TrimSpace(respBody)) == 0 {
+			log.Printf("empty_upstream_body method=%s path=%s upstream_status=%d content_type=%q", r.Method, sanitizePath(r.URL), resp.StatusCode, resp.Header.Get("Content-Type"))
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"error": map[string]any{
+					"message": fmt.Sprintf("上游返回空响应体（upstream_status=%d, content_type=%q）", resp.StatusCode, resp.Header.Get("Content-Type")),
+					"type":    "upstream_error",
+					"code":    "empty_upstream_body",
+				},
+			})
+			return
+		}
+
 		if limitedFreeReservation != nil && isChargeableLimitedFreeResponse(resp.StatusCode, resp.Header, respBody) {
 			limitedFreeChargeable = true
 		}

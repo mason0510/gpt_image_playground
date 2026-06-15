@@ -111,6 +111,12 @@ export function getApiTraceIdFromResponse(response: Response): string | undefine
   return typeof traceId === 'string' ? traceId : undefined
 }
 
+export function getApiTraceContextFromResponse(response: Response): ApiTraceContext | undefined {
+  const trace = (response as Response & { __apiTraceContext?: unknown }).__apiTraceContext
+  if (!trace || typeof trace !== 'object') return undefined
+  return trace as ApiTraceContext
+}
+
 export function formatNetworkApiError(err: unknown, traceId: string): Error {
   if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return err
   const rawMessage = err instanceof Error ? err.message : String(err)
@@ -130,6 +136,7 @@ export async function tracedFetch(input: string, init: RequestInit = {}, traceIn
       headers: withTraceHeader(init.headers, ctx.traceId),
     })
     ;(response as Response & { __apiTraceId?: string }).__apiTraceId = ctx.traceId
+    ;(response as Response & { __apiTraceContext?: ApiTraceContext }).__apiTraceContext = ctx
     const bodyPreview = response.ok ? undefined : await response.clone().text().catch(() => undefined)
     logApiResponse(ctx, response, bodyPreview)
     return response

@@ -52,7 +52,8 @@ func TestCustomKeyBypassesLimitedFreeLimit(t *testing.T) {
 	upstreamHits := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}))
 	defer upstream.Close()
 	upstreamURL, _ := url.Parse(upstream.URL)
@@ -265,8 +266,15 @@ func TestLimitedFreeEmptySuccessBodyDoesNotConsumeDailyQuota(t *testing.T) {
 
 	emptyResp := httptest.NewRecorder()
 	handler.ServeHTTP(emptyResp, limitedFreeJSONRequest(t, `{"n":1}`))
-	if emptyResp.Code != http.StatusOK {
+	if emptyResp.Code != http.StatusBadGateway {
 		t.Fatalf("empty upstream status=%d body=%s", emptyResp.Code, emptyResp.Body.String())
+	}
+	var emptyPayload map[string]map[string]any
+	if err := json.Unmarshal(emptyResp.Body.Bytes(), &emptyPayload); err != nil {
+		t.Fatal(err)
+	}
+	if emptyPayload["error"]["code"] != "empty_upstream_body" {
+		t.Fatalf("unexpected empty payload: %v", emptyPayload)
 	}
 
 	successResp := httptest.NewRecorder()
