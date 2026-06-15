@@ -166,9 +166,9 @@ function pickJsonErrorMessage(value: unknown): string | undefined {
 
 export function normalizeApiErrorMessage(message: string): string {
   const text = message.trim()
-  if (!text) return '服务返回了空响应，请稍后重试'
+  if (!text) return '服务返回了空响应体，请稍后重试'
   if (/Unexpected end of JSON input|Failed to execute 'json' on 'Response'/i.test(text)) {
-    return '服务返回了空响应，请稍后重试'
+    return '服务返回了空响应体，请稍后重试'
   }
   return text
 }
@@ -192,7 +192,7 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
   return formatHttpApiErrorMessage(normalizeApiErrorMessage(errorMsg), getApiTraceIdFromResponse(response))
 }
 
-export async function readJsonResponse<T = unknown>(response: Response, fallbackMessage = '服务返回了空响应，请稍后重试'): Promise<T> {
+export async function readJsonResponse<T = unknown>(response: Response, fallbackMessage = '服务返回了空响应体，请稍后重试'): Promise<T> {
   const text = await response.text()
   const trimmed = text.trim()
   if (!trimmed) {

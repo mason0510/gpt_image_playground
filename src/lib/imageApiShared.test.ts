@@ -12,7 +12,7 @@ describe('readJsonResponse', () => {
   })
 
   it('turns empty success body into a readable Chinese error', async () => {
-    await expect(readJsonResponse(withTrace(new Response(''), 'req-empty-body'))).rejects.toThrow('详细原因：服务返回了空响应，请稍后重试')
+    await expect(readJsonResponse(withTrace(new Response(''), 'req-empty-body'))).rejects.toThrow('详细原因：服务返回了空响应体，请稍后重试')
     await expect(readJsonResponse(withTrace(new Response(''), 'req-empty-body'))).rejects.toThrow('调试编号：req-empty-body')
   })
 
@@ -37,7 +37,7 @@ describe('getApiErrorMessage', () => {
   })
 
   it('normalizes raw browser JSON parse errors', () => {
-    expect(normalizeApiErrorMessage('Unexpected end of JSON input')).toBe('服务返回了空响应，请稍后重试')
-    expect(normalizeApiErrorMessage("Failed to execute 'json' on 'Response': Unexpected end of JSON input")).toBe('服务返回了空响应，请稍后重试')
+    expect(normalizeApiErrorMessage('Unexpected end of JSON input')).toBe('服务返回了空响应体，请稍后重试')
+    expect(normalizeApiErrorMessage("Failed to execute 'json' on 'Response': Unexpected end of JSON input")).toBe('服务返回了空响应体，请稍后重试')
   })
 })
