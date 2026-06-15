@@ -126,6 +126,8 @@ export type SettingsTab = 'general' | 'agent' | 'api' | 'data' | 'about'
 const TIMEOUT_STREAMING_HINT = '也可尝试打开「流式传输」，并提高「请求中间步骤图像数」来维持连接。'
 const TIMEOUT_PARTIAL_IMAGES_ZERO_HINT = '官方流式接口不发送心跳，当前「请求中间步骤图像数」为 0，连接可能因无数据传输而断开。建议提高到 2 或 3。'
 const TIMEOUT_PARTIAL_IMAGES_LOW_HINT = '也可尝试提高「请求中间步骤图像数」来维持连接，避免长时间无数据传输导致断开。'
+const IMAGE_API_TRANSIENT_RETRY_MAX_ATTEMPTS = 10
+const IMAGE_API_TRANSIENT_RETRY_DELAY_MS = 3000
 
 type TimeoutStreamingHintProfile = Pick<ApiProfile, 'provider' | 'streamImages' | 'streamPartialImages'>
 
@@ -139,6 +141,29 @@ function getTimeoutStreamingHint(profile?: TimeoutStreamingHintProfile | null) {
 
 function createOpenAITimeoutError(timeoutSeconds: number, profile?: TimeoutStreamingHintProfile | null) {
   return `请求超时：超过 ${timeoutSeconds} 秒仍未完成，请稍后重试或提高超时时间。${getTimeoutStreamingHint(profile)}`
+}
+
+function sleepMs(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function isTransientImageApiError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  if (!message.trim()) return false
+  return [
+    '服务返回了空响应体，请稍后重试',
+    '服务返回了空错误响应',
+    'Unexpected end of JSON input',
+    '请求未发出或被浏览器拦截',
+    'Operation timed out',
+    'timeout',
+    'timed out',
+    'empty response',
+    'Bad Gateway',
+    'gateway error',
+  ].some((keyword) => message.includes(keyword))
 }
 
 export function getCachedImage(id: string): string | undefined {
@@ -4061,32 +4086,56 @@ async function executeTask(taskId: string) {
       if (!maskDataUrl) throw new Error('遮罩图片已不存在')
     }
 
-    const result = await callImageApi({
-      settings: requestSettings,
-      prompt: replaceImageMentionsForApi(task.prompt, inputDataUrls.length),
-      params: task.params,
-      inputImageDataUrls: inputDataUrls,
-      maskDataUrl,
-      onFalRequestEnqueued: (request) => {
-        falRequestInfo = request
-        updateTaskInStore(taskId, {
-          falRequestId: request.requestId,
-          falEndpoint: request.endpoint,
-          falRecoverable: false,
+    const apiPrompt = replaceImageMentionsForApi(task.prompt, inputDataUrls.length)
+    let result: Awaited<ReturnType<typeof callImageApi>> | null = null
+    let lastTransientError: unknown = null
+
+    for (let attempt = 1; attempt <= IMAGE_API_TRANSIENT_RETRY_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        result = await callImageApi({
+          settings: requestSettings,
+          prompt: apiPrompt,
+          params: task.params,
+          inputImageDataUrls: inputDataUrls,
+          maskDataUrl,
+          onFalRequestEnqueued: (request) => {
+            falRequestInfo = request
+            updateTaskInStore(taskId, {
+              falRequestId: request.requestId,
+              falEndpoint: request.endpoint,
+              falRecoverable: false,
+            })
+          },
+          onCustomTaskEnqueued: (request) => {
+            customTaskInfo = request
+            updateTaskInStore(taskId, {
+              customTaskId: request.taskId,
+              customRecoverable: false,
+            })
+          },
+          onPartialImage: (partial) => {
+            useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex)
+            void persistTaskStreamPartialImage(taskId, partial.image)
+          },
         })
-      },
-      onCustomTaskEnqueued: (request) => {
-        customTaskInfo = request
-        updateTaskInStore(taskId, {
-          customTaskId: request.taskId,
-          customRecoverable: false,
-        })
-      },
-      onPartialImage: (partial) => {
-        useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex)
-        void persistTaskStreamPartialImage(taskId, partial.image)
-      },
-    })
+        lastTransientError = null
+        break
+      } catch (err) {
+        lastTransientError = err
+        if (!isTransientImageApiError(err) || attempt >= IMAGE_API_TRANSIENT_RETRY_MAX_ATTEMPTS) {
+          throw err
+        }
+        const latestRunningTask = useStore.getState().tasks.find((t) => t.id === taskId)
+        if (!latestRunningTask || latestRunningTask.status !== 'running') {
+          return
+        }
+        await sleepMs(IMAGE_API_TRANSIENT_RETRY_DELAY_MS)
+      }
+    }
+
+    if (!result) {
+      throw lastTransientError instanceof Error ? lastTransientError : new Error(String(lastTransientError ?? '图像请求失败'))
+    }
 
     const latestBeforeSuccess = useStore.getState().tasks.find((t) => t.id === taskId)
     if (!latestBeforeSuccess || latestBeforeSuccess.status !== 'running') {
@@ -4436,14 +4485,14 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
   useStore.getState().showToast(`已删除收藏夹「${collection.name}」`, 'success')
 }
 
-/** 重试失败的任务：创建新任务并执行 */
+/** 重试任务：复用原任务卡片，避免旧失败卡片残留在列表里造成误解 */
 export async function retryTask(task: TaskRecord) {
   const { settings } = useStore.getState()
-  const activeProfile = getActiveApiProfile(settings)
-  const normalizedParams = normalizeParamsForSettings(task.params, settings, { hasInputImages: task.inputImageIds.length > 0 })
-  const taskId = genId()
-  const newTask: TaskRecord = {
-    id: taskId,
+  const activeProfile = getTaskApiProfile(settings, task) ?? getActiveApiProfile(settings)
+  const requestSettings = createSettingsForApiProfile(settings, activeProfile)
+  const normalizedParams = normalizeParamsForSettings(task.params, requestSettings, { hasInputImages: task.inputImageIds.length > 0 })
+  const now = Date.now()
+  const retryPatch: Partial<TaskRecord> = {
     prompt: task.prompt,
     params: normalizedParams,
     apiProvider: activeProfile.provider,
@@ -4455,18 +4504,26 @@ export async function retryTask(task: TaskRecord) {
     maskTargetImageId: task.maskTargetImageId ?? null,
     maskImageId: task.maskImageId ?? null,
     outputImages: [],
+    streamPartialImageIds: undefined,
+    rawImageUrls: undefined,
+    rawResponsePayload: undefined,
+    actualParams: undefined,
+    actualParamsByImage: undefined,
+    revisedPromptByImage: undefined,
+    falRequestId: undefined,
+    falEndpoint: undefined,
+    falRecoverable: false,
+    customTaskId: undefined,
+    customRecoverable: false,
     status: 'running',
     error: null,
-    createdAt: Date.now(),
+    createdAt: now,
     finishedAt: null,
     elapsed: null,
   }
 
-  const latestTasks = useStore.getState().tasks
-  useStore.getState().setTasks([newTask, ...latestTasks])
-  await putTask(newTask)
-
-  executeTask(taskId)
+  await updateTaskInStorePersisted(task.id, retryPatch, { persistBeforeState: true })
+  executeTask(task.id)
 }
 
 /** 复用配置 */

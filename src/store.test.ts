@@ -101,7 +101,7 @@ import * as db from './lib/db'
 import { clearAgentConversations, clearImages, clearTasks, getAllAgentConversations, getAllTasks, putAgentConversation, putImage, putTask as putDbTask } from './lib/db'
 import { callImageApi } from './lib/api'
 import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
-import { cleanStaleAgentInputDrafts, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, reuseConfig, submitAgentMessage, submitTask, useStore } from './store'
+import { cleanStaleAgentInputDrafts, deleteAgentRoundFromConversation, deleteFavoriteCollection, editOutputs, getActiveAgentRounds, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeTask, retryTask, reuseConfig, submitAgentMessage, submitTask, useStore } from './store'
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -263,6 +263,76 @@ describe('mask draft lifecycle in store actions', () => {
     const state = useStore.getState()
     expect(state.tasks).toHaveLength(1)
     expect(state.showToast).toHaveBeenCalledWith('任务已提交', 'success')
+  })
+
+
+  it('retries a failed gallery task in the same card instead of creating a new item', async () => {
+    let finishApi!: (value: Awaited<ReturnType<typeof callImageApi>>) => void
+    vi.mocked(callImageApi).mockImplementationOnce(() => new Promise((resolve) => {
+      finishApi = resolve
+    }))
+    const failedTask = task({
+      id: 'failed-task',
+      status: 'error',
+      error: '服务返回了空响应体，可能是上游或代理临时异常，请稍后重试',
+      outputImages: [],
+      createdAt: 10,
+      finishedAt: 20,
+      elapsed: 10,
+      apiProvider: 'openai',
+      apiProfileId: 'openai-default',
+      apiProfileName: '默认',
+      apiMode: 'images',
+      apiModel: 'gpt-image-2',
+    })
+    useStore.setState({ tasks: [failedTask] })
+    await putDbTask(failedTask)
+
+    await retryTask(failedTask)
+
+    const state = useStore.getState()
+    expect(state.tasks).toHaveLength(1)
+    expect(state.tasks[0]).toMatchObject({
+      id: 'failed-task',
+      status: 'running',
+      error: null,
+      finishedAt: null,
+      elapsed: null,
+    })
+    expect(state.tasks[0].createdAt).toBeGreaterThan(10)
+
+    finishApi({
+      images: ['data:image/png;base64,retry-output'],
+      actualParams: {},
+      actualParamsList: [{}],
+      revisedPrompts: [],
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+
+  it('automatically retries transient empty image api responses up to success', async () => {
+    vi.useFakeTimers()
+    vi.mocked(callImageApi)
+      .mockRejectedValueOnce(new Error('请求失败，请检查接口配置或稍后重试。\n调试编号：img_test_1\n详细原因：服务返回了空响应体，请稍后重试'))
+      .mockRejectedValueOnce(new Error('请求失败，请检查接口配置或稍后重试。\n调试编号：img_test_2\n详细原因：服务返回了空响应体，请稍后重试'))
+      .mockResolvedValueOnce({
+        images: ['data:image/png;base64,auto-retry-output'],
+        actualParams: {},
+        actualParamsList: [{}],
+        revisedPrompts: [],
+      })
+
+    await submitTask()
+    await vi.runOnlyPendingTimersAsync()
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(3000)
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(3000)
+    await Promise.resolve()
+
+    expect(callImageApi).toHaveBeenCalledTimes(3)
+    expect(useStore.getState().tasks[0]?.status).toBe('done')
+    vi.useRealTimers()
   })
 
   it('falls back to reduced image storage before using volatile session memory', async () => {
