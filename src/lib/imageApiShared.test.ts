@@ -36,6 +36,18 @@ describe('getApiErrorMessage', () => {
     expect(message).toBe('bad gateway')
   })
 
+  it('includes upstream error code when present in json error payload', async () => {
+    const message = await getApiErrorMessage(withTrace(new Response(JSON.stringify({
+      error: {
+        message: 'Upstream rate limit exceeded, please retry later',
+        code: 'upstream_rate_limit',
+      },
+    }), { status: 429 }), 'req-upstream-rate-limit'))
+    expect(message).toContain('Upstream rate limit exceeded, please retry later')
+    expect(message).toContain('错误代码：upstream_rate_limit')
+    expect(message).toContain('调试编号：req-upstream-rate-limit')
+  })
+
   it('normalizes raw browser JSON parse errors', () => {
     expect(normalizeApiErrorMessage('Unexpected end of JSON input')).toBe('服务返回了空响应体，请稍后重试')
     expect(normalizeApiErrorMessage("Failed to execute 'json' on 'Response': Unexpected end of JSON input")).toBe('服务返回了空响应体，请稍后重试')

@@ -164,6 +164,18 @@ function pickJsonErrorMessage(value: unknown): string | undefined {
   return undefined
 }
 
+function pickJsonErrorCode(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  const error = record.error
+  if (error && typeof error === 'object' && !Array.isArray(error)) {
+    const code = (error as Record<string, unknown>).code
+    if (typeof code === 'string' && code.trim()) return code.trim()
+  }
+  if (typeof record.code === 'string' && record.code.trim()) return record.code.trim()
+  return undefined
+}
+
 export function normalizeApiErrorMessage(message: string): string {
   const text = message.trim()
   if (!text) return '服务返回了空响应体，请稍后重试'
@@ -183,7 +195,9 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
   } else {
     try {
       const errJson = JSON.parse(trimmed)
-      errorMsg = pickJsonErrorMessage(errJson) ?? trimmed
+      const message = pickJsonErrorMessage(errJson) ?? trimmed
+      const code = pickJsonErrorCode(errJson)
+      errorMsg = code ? `${message}\n错误代码：${code}` : message
     } catch {
       errorMsg = trimmed.length > 500 ? `${trimmed.slice(0, 500)}...` : trimmed
     }
