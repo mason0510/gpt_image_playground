@@ -1,6 +1,7 @@
 import { ensureImageCached } from '../store'
 import { zipSync } from 'fflate'
 import type { TaskRecord } from '../types'
+import { buildTaskFileNameBase } from './imageFileName'
 
 const MIME_EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
@@ -19,7 +20,7 @@ export interface DownloadImageZipEntry {
   fileNameBase?: string
 }
 
-type TaskOutputZipTask = Pick<TaskRecord, 'id' | 'createdAt' | 'outputImages'>
+type TaskOutputZipTask = Pick<TaskRecord, 'id' | 'prompt' | 'createdAt' | 'outputImages'>
 
 export function formatExportFileTime(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0')
@@ -94,7 +95,7 @@ export async function downloadImageEntriesAsZip(entries: DownloadImageZipEntry[]
 export function getTaskOutputImageZipEntries(tasks: TaskOutputZipTask[]): DownloadImageZipEntry[] {
   return [...tasks]
     .sort((a, b) => b.createdAt - a.createdAt)
-    .flatMap((task) => getImageZipEntries(task.outputImages || [], `task-${task.id}`))
+    .flatMap((task) => getImageZipEntries(task.outputImages || [], buildTaskFileNameBase(task)))
 }
 
 export function getImageZipEntries(imageIds: string[], fileNameBase = 'image'): DownloadImageZipEntry[] {
@@ -138,4 +139,3 @@ function sanitizeFileNamePart(value: string): string {
 function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
-

@@ -11,6 +11,7 @@ import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { getSafeBoundingClientRect } from '../lib/domRect'
 import { collectAgentRoundOutputImageSlots } from '../lib/agentImageReferences'
+import { buildPromptFileNameBase } from '../lib/imageFileName'
 import { useHintTooltip } from '../hooks/useHintTooltip'
 import { useTooltip } from '../hooks/useTooltip'
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getTaskOutputImageZipEntries } from '../lib/downloadImages'
@@ -562,7 +563,7 @@ export default function InputBar() {
 
     try {
       const timeStr = formatExportFileTime(new Date())
-      const fileNameBase = `batch-${timeStr}`
+      const fileNameBase = buildPromptFileNameBase(selectedTasks.map((task) => task.prompt).filter(Boolean).join(' '), { fallback: `batch-${timeStr}` })
       const { successCount, failCount } = settings.zipDownloadRoutes.includes('task-selection')
         ? await downloadImageEntriesAsZip(getTaskOutputImageZipEntries(selectedTasks), fileNameBase)
         : await downloadImageIds(imageIds, fileNameBase)
@@ -598,7 +599,7 @@ export default function InputBar() {
         if (entries.length === 0) continue
         const zipName = collection.id === ALL_FAVORITES_COLLECTION_ID
           ? `favorites-all-${timeStr}`
-          : `favorites-${collection.name}-${timeStr}`
+          : buildPromptFileNameBase(collection.tasks.map((task) => task.prompt).filter(Boolean).join(' '), { fallback: `favorites-${collection.name}-${timeStr}` })
         const result = useZipDownload
           ? await downloadImageEntriesAsZip(entries, zipName)
           : await downloadImageIds(entries.map((entry) => entry.imageId), zipName)

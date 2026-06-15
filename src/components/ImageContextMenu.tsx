@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react'
 import { useStore, addImageFromUrl, ensureImageCached } from '../store'
 import { copyImageSourceToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getImageZipEntries } from '../lib/downloadImages'
+import { buildPromptFileNameBase, buildTaskFileNameBase } from '../lib/imageFileName'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
 import { CopyIcon, DownloadIcon, EditIcon } from './icons'
 
@@ -105,9 +106,9 @@ export default function ImageContextMenu() {
         const tasks = useStore.getState().tasks
         const matchedTask = tasks.find(t => t.outputImages?.includes(imageId))
         if (matchedTask) {
-          fileNameBase = `task-${matchedTask.id}`
+          fileNameBase = buildTaskFileNameBase(matchedTask)
         } else {
-          fileNameBase = `image-${imageId}`
+          fileNameBase = buildPromptFileNameBase('', { fallback: `image-${imageId}` })
         }
       } else {
         const timeStr = formatExportFileTime(new Date())
@@ -138,7 +139,7 @@ export default function ImageContextMenu() {
         const tasks = useStore.getState().tasks
         const matchedTask = tasks.find(t => t.outputImages?.includes(outputImageIds[0]))
         if (matchedTask) {
-          fileNameBase = `task-${matchedTask.id}`
+          fileNameBase = buildTaskFileNameBase(matchedTask)
         }
       }
       if (!fileNameBase) {

@@ -6,6 +6,7 @@ import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboar
 import { collectWebSearchCalls, getAgentRoundOutputItems, getWebSearchStatusForCalls, type AgentWebSearchStatus } from '../lib/agentWebSearch'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
+import { buildPromptFileNameBase } from '../lib/imageFileName'
 import TaskCard from './TaskCard'
 import ViewportTooltip from './ViewportTooltip'
 import MarkdownRenderer from './MarkdownRenderer'
@@ -1190,7 +1191,7 @@ export default function AgentWorkspace() {
                                if (imageIds.length === 0) return;
                                try {
                                   const roundIndex = round?.index ?? 0;
-                                  const fileNameBase = 'agent-round-' + roundIndex;
+                                  const fileNameBase = buildPromptFileNameBase(tasksForRound.map((task) => task.prompt).filter(Boolean).join(' '), { fallback: 'agent-round-' + roundIndex });
                                   const settings = useStore.getState().settings;
                                   const { successCount, failCount } = settings.zipDownloadRoutes.includes('agent-round-all')
                                     ? await downloadImageEntriesAsZip(getImageZipEntries(imageIds, fileNameBase), fileNameBase)

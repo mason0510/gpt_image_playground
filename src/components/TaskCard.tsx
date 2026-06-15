@@ -5,6 +5,7 @@ import { formatImageRatio } from '../lib/size'
 import { getParamDisplay, ActualValueBadge } from '../lib/paramDisplay'
 import { DEFAULT_IMAGES_MODEL, DEFAULT_FAL_MODEL } from '../lib/apiProfiles'
 import { downloadImageIds } from '../lib/downloadImages'
+import { buildTaskFileNameBase } from '../lib/imageFileName'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { CodeIcon, DownloadIcon } from './icons'
 import ViewportTooltip from './ViewportTooltip'
@@ -326,7 +327,7 @@ export default function TaskCard({
   const handleDownloadStreamPreview = async () => {
     if (!streamPreviewSrc) return
     try {
-      const result = await downloadImageIds([streamPreviewSrc], `task-${task.id}-preview`)
+      const result = await downloadImageIds([streamPreviewSrc], buildTaskFileNameBase(task, { suffix: 'preview' }))
       showToast(result.successCount > 0 ? '预览图已下载' : '下载失败', result.successCount > 0 ? 'success' : 'error')
     } catch (err) {
       console.error(err)

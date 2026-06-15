@@ -9,6 +9,7 @@ import { copyImageSourceToClipboard, copyTextToClipboard, getClipboardFailureMes
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
+import { buildTaskFileNameBase } from '../lib/imageFileName'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { replaceImageMentionsForApi } from '../lib/promptImageMentions'
 import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashIcon } from './icons'
@@ -323,7 +324,7 @@ export default function DetailModal() {
     if (!currentOutputImageId || !task) return
 
     try {
-      const result = await downloadImageIds([currentOutputImageId], `task-${task.id}`)
+      const result = await downloadImageIds([currentOutputImageId], buildTaskFileNameBase(task))
       if (result.successCount === 0) {
         showToast('下载失败', 'error')
       } else {
@@ -340,7 +341,7 @@ export default function DetailModal() {
     if (!task?.outputImages?.length) return
 
     try {
-      const fileNameBase = `task-${task.id}`
+      const fileNameBase = buildTaskFileNameBase(task)
       const result = settings.zipDownloadRoutes.includes('task-detail-all')
         ? await downloadImageEntriesAsZip(getImageZipEntries(task.outputImages, fileNameBase), fileNameBase)
         : await downloadImageIds(task.outputImages, fileNameBase)
@@ -361,7 +362,7 @@ export default function DetailModal() {
     if (!task || !streamPartialImageIds.length) return
 
     try {
-      const fileNameBase = `task-${task.id}-partial`
+      const fileNameBase = buildTaskFileNameBase(task, { suffix: 'partial' })
       const result = settings.zipDownloadRoutes.includes('task-detail-partial')
         ? await downloadImageEntriesAsZip(getImageZipEntries(streamPartialImageIds, fileNameBase), fileNameBase)
         : await downloadImageIds(streamPartialImageIds, fileNameBase)
@@ -383,7 +384,7 @@ export default function DetailModal() {
     if (!task || !currentStreamPreviewSrc) return
 
     try {
-      const result = await downloadImageIds([currentStreamPreviewSrc], `task-${task.id}-preview-${imageIndex + 1}`)
+      const result = await downloadImageIds([currentStreamPreviewSrc], buildTaskFileNameBase(task, { suffix: `preview-${imageIndex + 1}` }))
       if (result.successCount === 0) {
         showToast('下载失败', 'error')
       } else {
