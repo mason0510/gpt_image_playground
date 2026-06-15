@@ -147,5 +147,5 @@ function DebugApp() {
 
 export default function App() {
   const isDebugPath = typeof window !== 'undefined' && window.location.pathname.replace(/\/$/, '') === '/debug'
-  return isDebugPath ? <DebugApp /> : <MaintenancePage />
+  return isDebugPath ? <DebugApp /> : <DebugApp />
 }
