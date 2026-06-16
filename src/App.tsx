@@ -20,6 +20,7 @@ import MaskEditorModal from './components/MaskEditorModal'
 import ImageContextMenu from './components/ImageContextMenu'
 import SupportPromptModal from './components/SupportPromptModal'
 import AnnouncementModal from './components/AnnouncementModal'
+import ComplianceGate from './components/ComplianceGate'
 import { FavoriteCollectionPickerModal, FavoriteCollectionsView, ManageCollectionsModal } from './components/FavoriteCollections'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 
@@ -141,6 +142,7 @@ function DebugApp() {
       <Toast />
       <MaskEditorModal />
       <ImageContextMenu />
+      <ComplianceGate />
     </div>
   )
 }
