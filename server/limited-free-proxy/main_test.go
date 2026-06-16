@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,6 +12,53 @@ import (
 	"testing"
 	"time"
 )
+
+func TestCapturePromptLogFromJSONBody(t *testing.T) {
+	rawBody := "{\"prompt\":\"\\n  生成 一张 海报  \\n第二行\\n\",\"n\":1}"
+	req := httptest.NewRequest(http.MethodPost, "/api-proxy/v1/images/generations", bytes.NewBufferString(rawBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	reader, prompt := capturePromptLog(req)
+	if prompt != "生成 一张 海报 第二行" {
+		t.Fatalf("unexpected prompt=%q", prompt)
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != rawBody {
+		t.Fatalf("forward body mismatch: %s", string(body))
+	}
+}
+
+func TestCapturePromptLogFromMultipartBody(t *testing.T) {
+	buf := &bytes.Buffer{}
+	writer := multipart.NewWriter(buf)
+	if err := writer.WriteField("model", "gpt-image-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("prompt", "\n  海报 主标题  \n第二行\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api-proxy/v1/images/edits", bytes.NewReader(buf.Bytes()))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	reader, prompt := capturePromptLog(req)
+	if prompt != "海报 主标题 第二行" {
+		t.Fatalf("unexpected prompt=%q", prompt)
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, buf.Bytes()) {
+		t.Fatal("forward multipart body mismatch")
+	}
+}
 
 func TestLimitedFreeDailyLimitCountsImagesNAndRejectsOverflow(t *testing.T) {
 	upstreamHits := 0

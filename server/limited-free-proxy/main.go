@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -194,8 +196,13 @@ func newProxyHandler(cfg config) http.Handler {
 			}
 		}
 
+		requestBodyForForward, promptLog := capturePromptLog(r)
+		if promptLog != "" {
+			log.Printf("image_request_prompt trace_id=%s method=%s path=%s content_type=%q prompt=%q", clientTraceID(r), r.Method, sanitizePath(r.URL), r.Header.Get("Content-Type"), promptLog)
+		}
+
 		upstreamURL := buildUpstreamURL(cfg.UpstreamBase, r.URL)
-		outReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL.String(), r.Body)
+		outReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL.String(), requestBodyForForward)
 		if err != nil {
 			writeProxyError(w, http.StatusBadGateway, "代理请求创建失败")
 			return
@@ -557,6 +564,107 @@ func schemeFromRequest(r *http.Request) string {
 		return "https"
 	}
 	return "http"
+}
+
+func capturePromptLog(r *http.Request) (io.Reader, string) {
+	if r == nil || r.Body == nil || r.Method != http.MethodPost || !strings.Contains(r.URL.EscapedPath(), "/images/") {
+		if r != nil {
+			return r.Body, ""
+		}
+		return nil, ""
+	}
+
+	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+	if strings.Contains(contentType, "json") {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return r.Body, ""
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		return bytes.NewReader(body), normalizePromptLogValue(extractJSONPrompt(body))
+	}
+
+	if strings.Contains(contentType, "multipart/form-data") {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return r.Body, ""
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		return bytes.NewReader(body), normalizePromptLogValue(extractMultipartPrompt(body, contentType))
+	}
+
+	return r.Body, ""
+}
+
+func extractJSONPrompt(body []byte) string {
+	var payload map[string]any
+	if len(bytes.TrimSpace(body)) == 0 {
+		return ""
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	if prompt, ok := payload["prompt"].(string); ok {
+		return prompt
+	}
+	if input, ok := payload["input"].(string); ok {
+		return input
+	}
+	return ""
+}
+
+func extractMultipartPrompt(body []byte, contentType string) string {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return ""
+	}
+	boundary := strings.TrimSpace(params["boundary"])
+	if boundary == "" {
+		return ""
+	}
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			return ""
+		}
+		if err != nil {
+			return ""
+		}
+		if part.FormName() != "prompt" {
+			_, _ = io.Copy(io.Discard, part)
+			_ = part.Close()
+			continue
+		}
+		data, err := io.ReadAll(io.LimitReader(part, 8192))
+		_ = part.Close()
+		if err != nil {
+			return ""
+		}
+		return string(data)
+	}
+}
+
+func normalizePromptLogValue(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return ""
+	}
+	prompt = strings.ReplaceAll(prompt, "\r", " ")
+	prompt = strings.ReplaceAll(prompt, "\n", " ")
+	prompt = strings.Join(strings.Fields(prompt), " ")
+	const maxPromptLogLen = 500
+	if len(prompt) > maxPromptLogLen {
+		return prompt[:maxPromptLogLen] + "...(truncated)"
+	}
+	return prompt
+}
+
+func clientTraceID(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Header.Get("X-Client-Trace-Id"))
 }
 
 func writeProxyError(w http.ResponseWriter, status int, message string) {
