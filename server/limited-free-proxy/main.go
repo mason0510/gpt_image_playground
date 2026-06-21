@@ -244,9 +244,23 @@ func newProxyHandler(cfg config) http.Handler {
 			}
 		}
 
-		requestBodyForForward, promptLog := capturePromptLog(r)
+		requestBodyForForward, imageLog := captureImageRequestLog(r)
+		promptLog := imageLog.Prompt
 		if promptLog != "" {
 			log.Printf("image_request_prompt trace_id=%s method=%s path=%s content_type=%q prompt=%q", clientTraceID(r), r.Method, sanitizePath(r.URL), r.Header.Get("Content-Type"), promptLog)
+		}
+		if imageLog.HasParams {
+			log.Printf(
+				"image_request_params trace_id=%s method=%s path=%s content_type=%q model=%q size=%q n=%d requested_4k=%t",
+				clientTraceID(r),
+				r.Method,
+				sanitizePath(r.URL),
+				r.Header.Get("Content-Type"),
+				imageLog.Model,
+				imageLog.Size,
+				imageLog.N,
+				is4KSize(imageLog.Size),
+			)
 		}
 
 		upstreamURL := buildUpstreamURL(cfg.UpstreamBase, r.URL)
@@ -748,72 +762,104 @@ func schemeFromRequest(r *http.Request) string {
 	return "http"
 }
 
+type imageRequestLog struct {
+	Prompt    string
+	Model     string
+	Size      string
+	N         int
+	HasParams bool
+}
+
 func capturePromptLog(r *http.Request) (io.Reader, string) {
+	reader, imageLog := captureImageRequestLog(r)
+	return reader, imageLog.Prompt
+}
+
+func captureImageRequestLog(r *http.Request) (io.Reader, imageRequestLog) {
 	if r == nil || r.Body == nil || r.Method != http.MethodPost || !strings.Contains(r.URL.EscapedPath(), "/images/") {
 		if r != nil {
-			return r.Body, ""
+			return r.Body, imageRequestLog{}
 		}
-		return nil, ""
+		return nil, imageRequestLog{}
 	}
 
 	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if strings.Contains(contentType, "json") {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			return r.Body, ""
+			return r.Body, imageRequestLog{}
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		return bytes.NewReader(body), normalizePromptLogValue(extractJSONPrompt(body))
+		return bytes.NewReader(body), extractJSONImageRequestLog(body)
 	}
 
 	if strings.Contains(contentType, "multipart/form-data") {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			return r.Body, ""
+			return r.Body, imageRequestLog{}
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		return bytes.NewReader(body), normalizePromptLogValue(extractMultipartPrompt(body, contentType))
+		return bytes.NewReader(body), extractMultipartImageRequestLog(body, contentType)
 	}
 
-	return r.Body, ""
+	return r.Body, imageRequestLog{}
 }
 
 func extractJSONPrompt(body []byte) string {
+	return extractJSONImageRequestLog(body).Prompt
+}
+
+func extractJSONImageRequestLog(body []byte) imageRequestLog {
 	var payload map[string]any
 	if len(bytes.TrimSpace(body)) == 0 {
-		return ""
+		return imageRequestLog{}
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return ""
+		return imageRequestLog{}
 	}
+	logFields := imageRequestLog{N: 1}
 	if prompt, ok := payload["prompt"].(string); ok {
-		return prompt
+		logFields.Prompt = normalizePromptLogValue(prompt)
+	} else if input, ok := payload["input"].(string); ok {
+		logFields.Prompt = normalizePromptLogValue(input)
 	}
-	if input, ok := payload["input"].(string); ok {
-		return input
+	if model, ok := payload["model"].(string); ok {
+		logFields.Model = strings.TrimSpace(model)
 	}
-	return ""
+	if size, ok := payload["size"].(string); ok {
+		logFields.Size = strings.TrimSpace(size)
+	}
+	logFields.N = parseImageCount(payload["n"])
+	logFields.HasParams = logFields.Model != "" || logFields.Size != "" || payload["n"] != nil
+	return logFields
 }
 
 func extractMultipartPrompt(body []byte, contentType string) string {
+	return extractMultipartImageRequestLog(body, contentType).Prompt
+}
+
+func extractMultipartImageRequestLog(body []byte, contentType string) imageRequestLog {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return ""
+		return imageRequestLog{}
 	}
 	boundary := strings.TrimSpace(params["boundary"])
 	if boundary == "" {
-		return ""
+		return imageRequestLog{}
 	}
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	logFields := imageRequestLog{N: 1}
 	for {
 		part, err := reader.NextPart()
 		if errors.Is(err, io.EOF) {
-			return ""
+			logFields.HasParams = logFields.Model != "" || logFields.Size != ""
+			return logFields
 		}
 		if err != nil {
-			return ""
+			return imageRequestLog{}
 		}
-		if part.FormName() != "prompt" {
+		name := part.FormName()
+		if name != "prompt" && name != "model" && name != "size" && name != "n" {
 			_, _ = io.Copy(io.Discard, part)
 			_ = part.Close()
 			continue
@@ -821,9 +867,20 @@ func extractMultipartPrompt(body []byte, contentType string) string {
 		data, err := io.ReadAll(io.LimitReader(part, 8192))
 		_ = part.Close()
 		if err != nil {
-			return ""
+			return imageRequestLog{}
 		}
-		return string(data)
+		value := strings.TrimSpace(string(data))
+		switch name {
+		case "prompt":
+			logFields.Prompt = normalizePromptLogValue(value)
+		case "model":
+			logFields.Model = value
+		case "size":
+			logFields.Size = value
+		case "n":
+			logFields.N = parseImageCount(value)
+			logFields.HasParams = true
+		}
 	}
 }
 
