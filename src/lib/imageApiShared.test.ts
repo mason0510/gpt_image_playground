@@ -64,3 +64,25 @@ describe('getApiErrorMessage', () => {
     expect(normalizeApiErrorMessage("Failed to execute 'json' on 'Response': Unexpected end of JSON input")).toBe('服务返回了空响应体，请稍后重试')
   })
 })
+
+describe('mergeActualParamsListWithMeasuredSize', () => {
+  it('keeps api actual params but overrides size with measured image size', async () => {
+    const mod = await import('./imageApiShared')
+    expect(mod.mergeActualParamsListWithMeasuredSize(
+      [{ size: '2304x3456', quality: 'high', output_format: 'png' }],
+      [{ size: '1024x1536' }],
+    )).toEqual([
+      { size: '1024x1536', quality: 'high', output_format: 'png' },
+    ])
+  })
+
+  it('falls back to measured size when the api omitted actual params', async () => {
+    const mod = await import('./imageApiShared')
+    expect(mod.mergeActualParamsListWithMeasuredSize(
+      undefined,
+      [{ size: '3840x2160' }],
+    )).toEqual([
+      { size: '3840x2160' },
+    ])
+  })
+})

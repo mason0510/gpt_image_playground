@@ -1726,7 +1726,7 @@ export default function SettingsModal() {
               {/* 5. API Key */}
               <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
-                  使用方式 <span className="text-xs font-normal text-gray-400 dark:text-gray-500">（限时免费每天 10 张；你也可以随时切到自己的平台）</span>
+                  使用方式 <span className="text-xs font-normal text-gray-400 dark:text-gray-500">（限时免费每天 10 张，其中 4K 最多 5 张，文生图/改图合计；你也可以随时切到自己的平台）</span>
                 </span>
                 {canUseLimitedFreeKey && (
                   <div className="mb-2">
@@ -1734,7 +1734,7 @@ export default function SettingsModal() {
                       value={apiKeySource}
                       onChange={handleApiKeySourceChange}
                       options={[
-                        { label: '限时免费（默认，每天 10 张）', value: 'limited-free' },
+                        { label: '限时免费（默认，每天 10 张，其中 4K 最多 5 张）', value: 'limited-free' },
                         { label: '自定义 API Key', value: 'custom' },
                       ]}
                     />
@@ -1742,7 +1742,7 @@ export default function SettingsModal() {
                 )}
                 {apiKeySource === 'limited-free' ? (
                   <div className="rounded-xl border border-blue-200/70 bg-blue-50/80 px-3 py-2.5 text-xs leading-5 text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200">
-                    现在就是限时免费模式：每天 10 张，直接用就行。请求会通过站内代理转发，页面不会展示真实 key。要改成你自己的 API Key、Base URL 或其他平台，再切到「自定义 API Key」即可。
+                    现在就是限时免费模式：每天 10 张，其中 4K 最多 5 张，文生图/改图合计，直接用就行。请求会通过站内代理转发，页面不会展示真实 key。要改成你自己的 API Key、Base URL 或其他平台，再切到「自定义 API Key」即可。
                   </div>
                 ) : (
                   <div className="relative">

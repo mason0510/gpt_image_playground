@@ -47,7 +47,7 @@ import { callImageApi } from './lib/api'
 import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage, type BatchImageCallResult } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
-import { IMAGE_FETCH_CORS_HINT, normalizeApiErrorMessage } from './lib/imageApiShared'
+import { IMAGE_FETCH_CORS_HINT, mergeActualParams, mergeActualParamsListWithMeasuredSize, normalizeApiErrorMessage } from './lib/imageApiShared'
 import { getFalErrorMessage, getFalQueuedImageResult } from './lib/falAiImageApi'
 import { getCustomQueuedImageResult } from './lib/openaiCompatibleImageApi'
 import { checkSensitivePrompt, formatSensitivePromptMessage } from './lib/sensitivePromptFilter'
@@ -2051,9 +2051,8 @@ async function resolveImageSizeParamsList(
   images: string[],
   preferred?: Array<Partial<TaskParams> | undefined>,
 ): Promise<Array<Partial<TaskParams> | undefined>> {
-  if (preferred?.length === images.length && preferred.every(hasActualParams)) return preferred
-  const fallback = await readImageSizeParamsList(images)
-  return images.map((_, index) => hasActualParams(preferred?.[index]) ? preferred?.[index] : fallback[index])
+  const measured = await readImageSizeParamsList(images)
+  return mergeActualParamsListWithMeasuredSize(preferred, measured)
 }
 
 async function completeRecoveredFalTask(task: TaskRecord, result: Awaited<ReturnType<typeof getFalQueuedImageResult>>) {
@@ -4150,11 +4149,11 @@ async function executeTask(taskId: string) {
       ? await resolveImageSizeParamsList(result.images, result.actualParamsList)
       : isAsyncCustomTask
       ? await readImageSizeParamsList(result.images)
-      : result.actualParamsList
+      : await resolveImageSizeParamsList(result.images, result.actualParamsList)
     const actualParams = (() => {
       if (taskProvider === 'fal') return firstActualParams(actualParamsList)
       if (isAsyncCustomTask) return firstActualParams(actualParamsList)
-      return { ...result.actualParams, n: outputIds.length }
+      return mergeActualParams({ ...result.actualParams, n: outputIds.length }, firstActualParams(actualParamsList))
     })()
     const shouldStoreRevisedPrompts = taskProvider !== 'fal' && !isAsyncCustomTask
     const actualParamsByImage = mapActualParamsByImage(outputIds, actualParamsList)

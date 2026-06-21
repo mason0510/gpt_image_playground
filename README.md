@@ -318,6 +318,43 @@ npm run build
 
 构建输出的文件位于 `dist/` 目录下，可将其部署至任何静态文件服务器（如普通 Nginx、GitHub Pages、Netlify 等）。
 
+**5. 本地 CLI 直连生图 / 查免费额度（不登录网页）**
+
+项目内置一个最小 Go CLI，适合在不打开网页的前提下直接走 `space.tap365.org` 的同源代理：
+
+```bash
+cd server/limited-free-proxy
+go run ./cmd/space-cli quota
+go run ./cmd/space-cli models
+go run ./cmd/space-cli generate --prompt "一只坐在窗边的猫"
+go run ./cmd/space-cli edit --image ./input.png --prompt "把背景改成雪山"
+```
+
+如果你想把它装成本地命令：
+
+```bash
+cd server/limited-free-proxy
+./install-space-cli.sh
+
+space-cli models --device-fingerprint codex-local-smoke
+space-cli generate --prompt "一只坐在窗边的猫"
+```
+
+默认行为：
+
+- 默认请求 `https://space.tap365.org/api-proxy`
+- 不传 `--api-key` 时自动走 `limited-free`
+- 无需网页登录
+- 线上当前已验证 `models` / `generate` 可用
+- 本地代理代码已支持 `quota`，但 `space.tap365.org` 当前线上版本对 `GET /v1/limited-free/quota` 仍返回 `403`，说明该接口尚未部署到线上
+
+如果你要改用自己的 key：
+
+```bash
+cd server/limited-free-proxy
+go run ./cmd/space-cli generate --api-key sk-xxx --prompt "自定义 key 生图"
+```
+
 </details>
 
 ---

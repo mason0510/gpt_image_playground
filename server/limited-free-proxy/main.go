@@ -29,7 +29,9 @@ const (
 	limitedFreeValue    = "limited-free"
 	deviceHeader        = "X-Imagination-Space-Device-Fingerprint"
 	defaultDailyLimit   = 10
+	defaultDaily4KLimit = 5
 	maxImagesPerRequest = 4
+	fourKPixelThreshold = 6_000_000
 )
 
 var hopByHopHeaders = map[string]struct{}{
@@ -44,26 +46,44 @@ var hopByHopHeaders = map[string]struct{}{
 }
 
 type config struct {
-	ListenAddr          string
-	UpstreamBase        *url.URL
-	LimitedFreeKey      string
-	LimitedFreeDailyMax int
-	RateLimitSalt       string
-	RateLimitStorePath  string
+	ListenAddr            string
+	UpstreamBase          *url.URL
+	LimitedFreeKey        string
+	LimitedFreeDailyMax   int
+	LimitedFreeDaily4KMax int
+	RateLimitSalt         string
+	RateLimitStorePath    string
 }
 
 type usageRecord struct {
-	Day   string `json:"day"`
-	Count int    `json:"count"`
+	Day     string `json:"day"`
+	Count   int    `json:"count"`
+	Count4K int    `json:"count_4k,omitempty"`
+}
+
+type usageSnapshot struct {
+	Day         string `json:"day"`
+	Limit       int    `json:"limit"`
+	Used        int    `json:"used"`
+	Remaining   int    `json:"remaining"`
+	Limit4K     int    `json:"limit_4k"`
+	Used4K      int    `json:"used_4k"`
+	Remaining4K int    `json:"remaining_4k"`
 }
 
 type freeUsageLimiter struct {
-	mu        sync.Mutex
-	records   map[string]usageRecord
-	dailyMax  int
-	salt      string
-	storePath string
-	now       func() time.Time
+	mu         sync.Mutex
+	records    map[string]usageRecord
+	dailyMax   int
+	daily4KMax int
+	salt       string
+	storePath  string
+	now        func() time.Time
+}
+
+type usageCost struct {
+	Total int
+	FourK int
 }
 
 func main() {
@@ -115,14 +135,23 @@ func loadConfig() (config, error) {
 		}
 		dailyMax = parsed
 	}
+	daily4KMax := defaultDaily4KLimit
+	if raw := strings.TrimSpace(os.Getenv("IMAGINATION_SPACE_LIMITED_FREE_DAILY_4K_MAX")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			return config{}, fmt.Errorf("IMAGINATION_SPACE_LIMITED_FREE_DAILY_4K_MAX 必须是正整数")
+		}
+		daily4KMax = parsed
+	}
 
 	return config{
-		ListenAddr:          listenAddr,
-		UpstreamBase:        upstream,
-		LimitedFreeKey:      strings.TrimSpace(os.Getenv("IMAGINATION_SPACE_LIMITED_FREE_API_KEY")),
-		LimitedFreeDailyMax: dailyMax,
-		RateLimitSalt:       strings.TrimSpace(os.Getenv("IMAGINATION_SPACE_RATE_LIMIT_SALT")),
-		RateLimitStorePath:  strings.TrimSpace(os.Getenv("IMAGINATION_SPACE_RATE_LIMIT_STORE_PATH")),
+		ListenAddr:            listenAddr,
+		UpstreamBase:          upstream,
+		LimitedFreeKey:        strings.TrimSpace(os.Getenv("IMAGINATION_SPACE_LIMITED_FREE_API_KEY")),
+		LimitedFreeDailyMax:   dailyMax,
+		LimitedFreeDaily4KMax: daily4KMax,
+		RateLimitSalt:         strings.TrimSpace(os.Getenv("IMAGINATION_SPACE_RATE_LIMIT_SALT")),
+		RateLimitStorePath:    strings.TrimSpace(os.Getenv("IMAGINATION_SPACE_RATE_LIMIT_STORE_PATH")),
 	}, nil
 }
 
@@ -136,6 +165,15 @@ func newProxyHandler(cfg config) http.Handler {
 		}
 
 		limitedFree := isLimitedFreeRequest(r)
+		if limitedFree && isLimitedFreeQuotaRequest(r) {
+			snapshot := limiter.Snapshot(r)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"mode":      limitedFreeValue,
+				"quota":     snapshot,
+				"timestamp": time.Now().Format(time.RFC3339),
+			})
+			return
+		}
 		var limitedFreeReservation *quotaReservation
 		limitedFreeChargeable := false
 		defer func() {
@@ -148,13 +186,13 @@ func newProxyHandler(cfg config) http.Handler {
 				writeProxyError(w, http.StatusServiceUnavailable, "限时免费 key 暂不可用，请填写自己的 API Key")
 				return
 			}
-			delta, body, err := readLimitedFreeRouteCost(r)
+			cost, body, err := readLimitedFreeRouteCost(r)
 			if err != nil {
 				var routeErr limitedFreeRouteError
 				if errors.As(err, &routeErr) {
 					writeJSON(w, http.StatusForbidden, map[string]any{
 						"error": map[string]any{
-							"message": "限时免费 key 仅支持图片生成接口，请切换为自己的 API Key 后使用其他接口。",
+							"message": "限时免费 key 仅支持图片生成/编辑相关接口，请切换为自己的 API Key 后使用其他接口。",
 							"type":    "invalid_request_error",
 							"code":    "limited_free_endpoint_not_allowed",
 						},
@@ -167,8 +205,8 @@ func newProxyHandler(cfg config) http.Handler {
 			if body != nil {
 				r.Body = io.NopCloser(bytes.NewReader(body))
 			}
-			if delta > 0 {
-				if delta > maxImagesPerRequest {
+			if cost.Total > 0 {
+				if cost.Total > maxImagesPerRequest {
 					w.Header().Set("X-Imagination-Space-Free-Max-Per-Request", strconv.Itoa(maxImagesPerRequest))
 					writeJSON(w, http.StatusBadRequest, map[string]any{
 						"error": map[string]any{
@@ -176,13 +214,23 @@ func newProxyHandler(cfg config) http.Handler {
 							"type":      "invalid_request_error",
 							"code":      "free_request_image_limit",
 							"limit":     maxImagesPerRequest,
-							"requested": delta,
+							"requested": cost.Total,
 						},
 					})
 					return
 				}
-				result := limiter.Reserve(r, delta)
+				result := limiter.Reserve(r, cost)
 				if !result.Allowed {
+					if cost.FourK > 0 && result.Remaining4K == 0 {
+						writeJSON(w, http.StatusTooManyRequests, map[string]any{
+							"error": map[string]any{
+								"message": "限时免费 key 的 4K 图片今日免费体验额度已用完（每天最多 5 张）。请明天再试，或切换为自己的 API Key。",
+								"type":    "rate_limit_exceeded",
+								"code":    "free_daily_4k_limit",
+							},
+						})
+						return
+					}
 					writeJSON(w, http.StatusTooManyRequests, map[string]any{
 						"error": map[string]any{
 							"message": "限时免费 key 今日免费体验额度已用完。请明天再试，或切换为自己的 API Key。",
@@ -262,6 +310,9 @@ type allowResult struct {
 	Limit       int
 	Used        int
 	Remaining   int
+	Limit4K     int
+	Used4K      int
+	Remaining4K int
 	Reservation *quotaReservation
 }
 
@@ -270,19 +321,24 @@ type quotaReservation struct {
 	key     string
 	day     string
 	delta   int
+	delta4K int
 	once    sync.Once
 }
 
 func newFreeUsageLimiter(cfg config) *freeUsageLimiter {
 	limiter := &freeUsageLimiter{
-		records:   map[string]usageRecord{},
-		dailyMax:  cfg.LimitedFreeDailyMax,
-		salt:      cfg.RateLimitSalt,
-		storePath: cfg.RateLimitStorePath,
-		now:       time.Now,
+		records:    map[string]usageRecord{},
+		dailyMax:   cfg.LimitedFreeDailyMax,
+		daily4KMax: cfg.LimitedFreeDaily4KMax,
+		salt:       cfg.RateLimitSalt,
+		storePath:  cfg.RateLimitStorePath,
+		now:        time.Now,
 	}
 	if limiter.dailyMax < 1 {
 		limiter.dailyMax = defaultDailyLimit
+	}
+	if limiter.daily4KMax < 1 {
+		limiter.daily4KMax = defaultDaily4KLimit
 	}
 	if limiter.salt == "" {
 		limiter.salt = cfg.LimitedFreeKey
@@ -294,9 +350,15 @@ func newFreeUsageLimiter(cfg config) *freeUsageLimiter {
 	return limiter
 }
 
-func (l *freeUsageLimiter) Reserve(r *http.Request, delta int) allowResult {
-	if delta < 1 {
-		delta = 1
+func (l *freeUsageLimiter) Reserve(r *http.Request, cost usageCost) allowResult {
+	if cost.Total < 1 {
+		cost.Total = 1
+	}
+	if cost.FourK < 0 {
+		cost.FourK = 0
+	}
+	if cost.FourK > cost.Total {
+		cost.FourK = cost.Total
 	}
 	today := l.now().In(time.Local).Format("2006-01-02")
 	key := l.deviceKey(r, today)
@@ -308,10 +370,19 @@ func (l *freeUsageLimiter) Reserve(r *http.Request, delta int) allowResult {
 	if record.Day != today {
 		record = usageRecord{Day: today}
 	}
-	if record.Count+delta > l.dailyMax {
-		return allowResult{Allowed: false, Limit: l.dailyMax, Used: record.Count, Remaining: maxInt(0, l.dailyMax-record.Count)}
+	if record.Count+cost.Total > l.dailyMax || record.Count4K+cost.FourK > l.daily4KMax {
+		return allowResult{
+			Allowed:     false,
+			Limit:       l.dailyMax,
+			Used:        record.Count,
+			Remaining:   maxInt(0, l.dailyMax-record.Count),
+			Limit4K:     l.daily4KMax,
+			Used4K:      record.Count4K,
+			Remaining4K: maxInt(0, l.daily4KMax-record.Count4K),
+		}
 	}
-	record.Count += delta
+	record.Count += cost.Total
+	record.Count4K += cost.FourK
 	l.records[key] = record
 	l.saveLocked()
 	return allowResult{
@@ -319,7 +390,32 @@ func (l *freeUsageLimiter) Reserve(r *http.Request, delta int) allowResult {
 		Limit:       l.dailyMax,
 		Used:        record.Count,
 		Remaining:   maxInt(0, l.dailyMax-record.Count),
-		Reservation: &quotaReservation{limiter: l, key: key, day: today, delta: delta},
+		Limit4K:     l.daily4KMax,
+		Used4K:      record.Count4K,
+		Remaining4K: maxInt(0, l.daily4KMax-record.Count4K),
+		Reservation: &quotaReservation{limiter: l, key: key, day: today, delta: cost.Total, delta4K: cost.FourK},
+	}
+}
+
+func (l *freeUsageLimiter) Snapshot(r *http.Request) usageSnapshot {
+	today := l.now().In(time.Local).Format("2006-01-02")
+	key := l.deviceKey(r, today)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	record := l.records[key]
+	if record.Day != today {
+		record = usageRecord{Day: today}
+	}
+	return usageSnapshot{
+		Day:         today,
+		Limit:       l.dailyMax,
+		Used:        record.Count,
+		Remaining:   maxInt(0, l.dailyMax-record.Count),
+		Limit4K:     l.daily4KMax,
+		Used4K:      record.Count4K,
+		Remaining4K: maxInt(0, l.daily4KMax-record.Count4K),
 	}
 }
 
@@ -337,7 +433,8 @@ func (r *quotaReservation) Rollback() {
 			return
 		}
 		record.Count = maxInt(0, record.Count-r.delta)
-		if record.Count == 0 {
+		record.Count4K = maxInt(0, record.Count4K-r.delta4K)
+		if record.Count == 0 && record.Count4K == 0 {
 			delete(l.records, r.key)
 		} else {
 			l.records[r.key] = record
@@ -408,31 +505,108 @@ func (limitedFreeRouteError) Error() string {
 	return "limited free endpoint not allowed"
 }
 
-func readLimitedFreeRouteCost(r *http.Request) (int, []byte, error) {
+func readLimitedFreeRouteCost(r *http.Request) (usageCost, []byte, error) {
 	path := r.URL.EscapedPath()
+	if r.Method == http.MethodGet && strings.HasSuffix(path, "/v1/limited-free/quota") {
+		return usageCost{}, nil, nil
+	}
 	if r.Method == http.MethodGet && (strings.HasSuffix(path, "/v1/models") || strings.HasSuffix(path, "/models")) {
-		return 0, nil, nil
+		return usageCost{}, nil, nil
 	}
 	if r.Method != http.MethodPost || !strings.Contains(path, "/images/") {
-		return 0, nil, limitedFreeRouteError{}
+		return usageCost{}, nil, limitedFreeRouteError{}
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return 0, nil, err
+		return usageCost{}, nil, err
 	}
 	contentType := strings.ToLower(r.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "multipart/form-data") {
+		return parseMultipartImageCost(body, contentType), body, nil
+	}
 	if contentType != "" && !strings.Contains(contentType, "json") {
-		return 1, body, nil
+		return usageCost{Total: 1}, body, nil
 	}
 	var payload struct {
-		N any `json:"n"`
+		N    any    `json:"n"`
+		Size string `json:"size"`
 	}
 	if len(strings.TrimSpace(string(body))) > 0 {
 		if err := json.Unmarshal(body, &payload); err != nil {
-			return 0, body, err
+			return usageCost{}, body, err
 		}
 	}
-	return parseImageCount(payload.N), body, nil
+	total := parseImageCount(payload.N)
+	fourK := 0
+	if is4KSize(payload.Size) {
+		fourK = total
+	}
+	return usageCost{Total: total, FourK: fourK}, body, nil
+}
+
+func parseMultipartImageCost(body []byte, contentType string) usageCost {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return usageCost{Total: 1}
+	}
+	boundary := strings.TrimSpace(params["boundary"])
+	if boundary == "" {
+		return usageCost{Total: 1}
+	}
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	total := 1
+	size := ""
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			fourK := 0
+			if is4KSize(size) {
+				fourK = total
+			}
+			return usageCost{Total: total, FourK: fourK}
+		}
+		if err != nil {
+			return usageCost{Total: 1}
+		}
+		name := part.FormName()
+		if name != "n" && name != "size" {
+			_, _ = io.Copy(io.Discard, part)
+			_ = part.Close()
+			continue
+		}
+		data, err := io.ReadAll(io.LimitReader(part, 64))
+		_ = part.Close()
+		if err != nil {
+			return usageCost{Total: 1}
+		}
+		if name == "n" {
+			total = parseImageCount(string(data))
+			continue
+		}
+		size = string(data)
+	}
+}
+
+func is4KSize(raw string) bool {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" {
+		return false
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == 'x' || r == '×' || r == 'X'
+	})
+	if len(parts) != 2 {
+		return false
+	}
+	width, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil || width < 1 {
+		return false
+	}
+	height, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || height < 1 {
+		return false
+	}
+	return width*height >= fourKPixelThreshold
 }
 
 func parseImageCount(value any) int {
@@ -515,6 +689,14 @@ func isLimitedFreeRequest(r *http.Request) bool {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	bearer := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer"))
 	return mode || bearer == limitedFreeSentinel
+}
+
+func isLimitedFreeQuotaRequest(r *http.Request) bool {
+	if r == nil || r.Method != http.MethodGet {
+		return false
+	}
+	path := r.URL.EscapedPath()
+	return strings.HasSuffix(path, "/v1/limited-free/quota")
 }
 
 func copyRequestHeaders(dst, src http.Header) {

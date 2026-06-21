@@ -268,3 +268,10 @@ export function mergeActualParams(...sources: Array<Partial<TaskParams> | undefi
   const merged = Object.assign({}, ...sources.filter((source) => source && Object.keys(source).length))
   return Object.keys(merged).length ? merged : undefined
 }
+
+export function mergeActualParamsListWithMeasuredSize(
+  preferred: Array<Partial<TaskParams> | undefined> | undefined,
+  measured: Array<Partial<TaskParams> | undefined>,
+): Array<Partial<TaskParams> | undefined> {
+  return measured.map((measuredParams, index) => mergeActualParams(preferred?.[index], measuredParams))
+}
