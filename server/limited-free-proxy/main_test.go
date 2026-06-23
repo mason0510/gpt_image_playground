@@ -13,6 +13,42 @@ import (
 	"time"
 )
 
+func TestLimitedFreeImageRequestRetriesUpToFiveTimesOn502(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		if upstreamHits < 5 {
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"error": map[string]any{"message": "temporary upstream failure"},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"b64_json": "ok"}},
+		})
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	handler := newProxyHandler(config{
+		UpstreamBase:          upstreamURL,
+		LimitedFreeKey:        "test-free-key",
+		LimitedFreeDailyMax:   10,
+		LimitedFreeDaily4KMax: 5,
+		RateLimitSalt:         "test-salt",
+		RateLimitStorePath:    filepath.Join(t.TempDir(), "usage.json"),
+	})
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("retry request status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if upstreamHits != 5 {
+		t.Fatalf("expected 5 upstream attempts, got %d", upstreamHits)
+	}
+}
+
 func TestCapturePromptLogFromJSONBody(t *testing.T) {
 	rawBody := "{\"prompt\":\"\\n  生成 一张 海报  \\n第二行\\n\",\"n\":1}"
 	req := httptest.NewRequest(http.MethodPost, "/api-proxy/v1/images/generations", bytes.NewBufferString(rawBody))
@@ -588,7 +624,7 @@ func TestLimitedFreeFailedUpstreamDoesNotConsumeDailyQuota(t *testing.T) {
 	}
 }
 
-func TestLimitedFreeEmptySuccessBodyDoesNotConsumeDailyQuota(t *testing.T) {
+func TestLimitedFreeEmptySuccessBodyRetriesAndStillConsumesQuotaOnce(t *testing.T) {
 	upstreamHits := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
@@ -611,22 +647,18 @@ func TestLimitedFreeEmptySuccessBodyDoesNotConsumeDailyQuota(t *testing.T) {
 		RateLimitStorePath:    filepath.Join(t.TempDir(), "usage.json"),
 	})
 
-	emptyResp := httptest.NewRecorder()
-	handler.ServeHTTP(emptyResp, limitedFreeJSONRequest(t, `{"n":1}`))
-	if emptyResp.Code != http.StatusBadGateway {
-		t.Fatalf("empty upstream status=%d body=%s", emptyResp.Code, emptyResp.Body.String())
+	retryResp := httptest.NewRecorder()
+	handler.ServeHTTP(retryResp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if retryResp.Code != http.StatusOK {
+		t.Fatalf("empty-body retry status=%d body=%s", retryResp.Code, retryResp.Body.String())
 	}
-	var emptyPayload map[string]map[string]any
-	if err := json.Unmarshal(emptyResp.Body.Bytes(), &emptyPayload); err != nil {
-		t.Fatal(err)
-	}
-	if emptyPayload["error"]["code"] != "empty_upstream_body" {
-		t.Fatalf("unexpected empty payload: %v", emptyPayload)
+	if upstreamHits != 2 {
+		t.Fatalf("expected retry after empty success body, upstreamHits=%d", upstreamHits)
 	}
 
-	successResp := httptest.NewRecorder()
-	handler.ServeHTTP(successResp, limitedFreeJSONRequest(t, `{"n":1}`))
-	if successResp.Code != http.StatusOK {
-		t.Fatalf("success after empty response should still be allowed, status=%d body=%s", successResp.Code, successResp.Body.String())
+	overflowResp := httptest.NewRecorder()
+	handler.ServeHTTP(overflowResp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if overflowResp.Code != http.StatusTooManyRequests {
+		t.Fatalf("successful retried request should consume quota once; overflow status=%d body=%s", overflowResp.Code, overflowResp.Body.String())
 	}
 }

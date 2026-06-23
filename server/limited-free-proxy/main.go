@@ -32,6 +32,7 @@ const (
 	defaultDaily4KLimit = 5
 	maxImagesPerRequest = 4
 	fourKPixelThreshold = 6_000_000
+	maxImageRetryCount  = 5
 )
 
 var hopByHopHeaders = map[string]struct{}{
@@ -278,21 +279,13 @@ func newProxyHandler(cfg config) http.Handler {
 			outReq.Header.Del(deviceHeader)
 		}
 
-		resp, err := client.Do(outReq)
+		resp, respBody, err := doUpstreamRequestWithRetry(client, outReq)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
 				return
 			}
 			log.Printf("upstream_error method=%s path=%s err=%v", r.Method, sanitizePath(r.URL), err)
 			writeProxyError(w, http.StatusBadGateway, "上游代理请求失败")
-			return
-		}
-		defer resp.Body.Close()
-
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			log.Printf("read_response_error method=%s path=%s err=%v", r.Method, sanitizePath(r.URL), err)
-			writeProxyError(w, http.StatusBadGateway, "上游响应读取失败")
 			return
 		}
 		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && len(bytes.TrimSpace(respBody)) == 0 {
@@ -317,6 +310,122 @@ func newProxyHandler(cfg config) http.Handler {
 			log.Printf("copy_response_error method=%s path=%s err=%v", r.Method, sanitizePath(r.URL), err)
 		}
 	})
+}
+
+func doUpstreamRequestWithRetry(client *http.Client, req *http.Request) (*http.Response, []byte, error) {
+	if client == nil || req == nil {
+		return nil, nil, fmt.Errorf("invalid upstream request")
+	}
+	attempts := 1
+	if shouldRetryImageRequest(req) {
+		attempts = maxImageRetryCount
+	}
+	var lastResp *http.Response
+	var lastBody []byte
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		clonedReq, err := cloneRequestForRetry(req)
+		if err != nil {
+			return nil, nil, err
+		}
+		resp, body, err := doSingleUpstreamRequest(client, clonedReq)
+		if err == nil && !shouldRetryUpstreamResponse(clonedReq, resp, body) {
+			return resp, body, nil
+		}
+		if resp != nil && err == nil {
+			lastResp = resp
+			lastBody = body
+			lastErr = nil
+			log.Printf("image_upstream_retry attempt=%d/%d method=%s path=%s status=%d", attempt, attempts, clonedReq.Method, sanitizePath(clonedReq.URL), resp.StatusCode)
+		} else if err != nil {
+			lastErr = err
+			log.Printf("image_upstream_retry attempt=%d/%d method=%s path=%s err=%v", attempt, attempts, clonedReq.Method, sanitizePath(clonedReq.URL), err)
+			if errors.Is(err, context.Canceled) || errors.Is(clonedReq.Context().Err(), context.Canceled) {
+				return nil, nil, err
+			}
+		}
+		if attempt == attempts {
+			break
+		}
+		time.Sleep(imageRetryBackoff(attempt))
+	}
+	if lastResp != nil {
+		return lastResp, lastBody, nil
+	}
+	return nil, nil, lastErr
+}
+
+func doSingleUpstreamRequest(client *http.Client, req *http.Request) (*http.Response, []byte, error) {
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if readErr != nil {
+		return nil, nil, readErr
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return resp, body, nil
+}
+
+func cloneRequestForRetry(req *http.Request) (*http.Request, error) {
+	cloned := req.Clone(req.Context())
+	if req.GetBody != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		cloned.Body = body
+		return cloned, nil
+	}
+	if req.Body == nil {
+		return cloned, nil
+	}
+	data, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	_ = req.Body.Close()
+	req.Body = io.NopCloser(bytes.NewReader(data))
+	cloned.Body = io.NopCloser(bytes.NewReader(data))
+	cloned.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(data)), nil
+	}
+	cloned.ContentLength = int64(len(data))
+	req.GetBody = cloned.GetBody
+	req.ContentLength = cloned.ContentLength
+	return cloned, nil
+}
+
+func shouldRetryImageRequest(req *http.Request) bool {
+	if req == nil || req.URL == nil {
+		return false
+	}
+	if req.Method != http.MethodPost {
+		return false
+	}
+	return strings.Contains(req.URL.EscapedPath(), "/images/")
+}
+
+func shouldRetryUpstreamResponse(req *http.Request, resp *http.Response, body []byte) bool {
+	if !shouldRetryImageRequest(req) || resp == nil {
+		return false
+	}
+	if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+		return true
+	}
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && len(bytes.TrimSpace(body)) == 0 {
+		return true
+	}
+	return false
+}
+
+func imageRetryBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	return time.Duration(attempt) * 200 * time.Millisecond
 }
 
 type allowResult struct {
