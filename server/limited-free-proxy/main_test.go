@@ -49,6 +49,41 @@ func TestLimitedFreeImageRequestRetriesUpToFiveTimesOn502(t *testing.T) {
 	}
 }
 
+func TestLimitedFreeImageRequestRetriesUpToFiveTimesOnEmpty200Body(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if upstreamHits < 5 {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"b64_json": "ok"}},
+		})
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	handler := newProxyHandler(config{
+		UpstreamBase:          upstreamURL,
+		LimitedFreeKey:        "test-free-key",
+		LimitedFreeDailyMax:   10,
+		LimitedFreeDaily4KMax: 5,
+		RateLimitSalt:         "test-salt",
+		RateLimitStorePath:    filepath.Join(t.TempDir(), "usage.json"),
+	})
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("retry empty 200 status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if upstreamHits != 5 {
+		t.Fatalf("expected 5 upstream attempts on empty 200 body, got %d", upstreamHits)
+	}
+}
+
 func TestCapturePromptLogFromJSONBody(t *testing.T) {
 	rawBody := "{\"prompt\":\"\\n  生成 一张 海报  \\n第二行\\n\",\"n\":1}"
 	req := httptest.NewRequest(http.MethodPost, "/api-proxy/v1/images/generations", bytes.NewBufferString(rawBody))

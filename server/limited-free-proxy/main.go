@@ -289,7 +289,9 @@ func newProxyHandler(cfg config) http.Handler {
 			return
 		}
 		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && len(bytes.TrimSpace(respBody)) == 0 {
-			log.Printf("empty_upstream_body method=%s path=%s upstream_status=%d content_type=%q", r.Method, sanitizePath(r.URL), resp.StatusCode, resp.Header.Get("Content-Type"))
+			log.Printf("empty_upstream_body method=%s path=%s upstream_status=%d content_type=%q x_request_id=%q cf_ray=%q server=%q via=%q",
+				r.Method, sanitizePath(r.URL), resp.StatusCode, resp.Header.Get("Content-Type"),
+				resp.Header.Get("X-Request-Id"), resp.Header.Get("Cf-Ray"), resp.Header.Get("Server"), resp.Header.Get("Via"))
 			writeJSON(w, http.StatusBadGateway, map[string]any{
 				"error": map[string]any{
 					"message": fmt.Sprintf("上游返回空响应体（upstream_status=%d, content_type=%q）", resp.StatusCode, resp.Header.Get("Content-Type")),
@@ -336,7 +338,9 @@ func doUpstreamRequestWithRetry(client *http.Client, req *http.Request) (*http.R
 			lastResp = resp
 			lastBody = body
 			lastErr = nil
-			log.Printf("image_upstream_retry attempt=%d/%d method=%s path=%s status=%d", attempt, attempts, clonedReq.Method, sanitizePath(clonedReq.URL), resp.StatusCode)
+			log.Printf("image_upstream_retry attempt=%d/%d method=%s path=%s status=%d x_request_id=%q cf_ray=%q server=%q via=%q",
+				attempt, attempts, clonedReq.Method, sanitizePath(clonedReq.URL), resp.StatusCode,
+				resp.Header.Get("X-Request-Id"), resp.Header.Get("Cf-Ray"), resp.Header.Get("Server"), resp.Header.Get("Via"))
 		} else if err != nil {
 			lastErr = err
 			log.Printf("image_upstream_retry attempt=%d/%d method=%s path=%s err=%v", attempt, attempts, clonedReq.Method, sanitizePath(clonedReq.URL), err)
