@@ -1,7 +1,11 @@
+import { calculateImageSize, normalizeImageSize } from './size'
+
 export const LIMITED_FREE_API_KEY_SENTINEL = '__IMAGINATION_SPACE_LIMITED_FREE_KEY__'
 export const LIMITED_FREE_API_KEY_HEADER = 'X-Imagination-Space-Key-Mode'
 export const LIMITED_FREE_API_KEY_HEADER_VALUE = 'limited-free'
 export const LIMITED_FREE_DEVICE_FINGERPRINT_HEADER = 'X-Imagination-Space-Device-Fingerprint'
+export const LIMITED_FREE_API_KEY_LABEL = '限时免费 key'
+export const CUSTOM_API_KEY_LABEL = '自定义 API Key'
 
 const LIMITED_FREE_DEVICE_ID_KEY = 'imagination-space-limited-free-device-id'
 
@@ -11,6 +15,69 @@ export function isLimitedFreeApiKey(apiKey: string | undefined | null): boolean 
 
 export function getApiKeySource(apiKey: string | undefined | null): 'limited-free' | 'custom' {
   return isLimitedFreeApiKey(apiKey) ? 'limited-free' : 'custom'
+}
+
+export function getApiKeySourceLabel(apiKey: string | undefined | null): string {
+  return isLimitedFreeApiKey(apiKey) ? LIMITED_FREE_API_KEY_LABEL : CUSTOM_API_KEY_LABEL
+}
+
+export interface ApiKeyUsagePolicy {
+  source: 'limited-free' | 'custom'
+  /** undefined 表示自有 key 不做前端张数限制 */
+  maxImagesPerRequest?: number
+  /** undefined 表示不限制尺寸档位 */
+  allowedSizeTiers?: Array<'1K' | '2K' | '4K'>
+  allowCustomResolution: boolean
+}
+
+export function getApiKeyUsagePolicy(apiKey: string | undefined | null): ApiKeyUsagePolicy {
+  if (isLimitedFreeApiKey(apiKey)) {
+    return {
+      source: 'limited-free',
+      maxImagesPerRequest: 2,
+      allowedSizeTiers: ['1K', '2K'],
+      allowCustomResolution: false,
+    }
+  }
+
+  return {
+    source: 'custom',
+    allowCustomResolution: true,
+  }
+}
+
+export function isSizeTierAllowedByApiKey(apiKey: string | undefined | null, tier: '1K' | '2K' | '4K'): boolean {
+  const allowedSizeTiers = getApiKeyUsagePolicy(apiKey).allowedSizeTiers
+  return !allowedSizeTiers || allowedSizeTiers.includes(tier)
+}
+
+export function resolveSizeSelectionByApiKey(
+  size: string,
+  apiKey: string | undefined | null,
+): { size: string; clamped: boolean; source: 'limited-free' | 'custom' } {
+  const policy = getApiKeyUsagePolicy(apiKey)
+  const normalizedSize = normalizeImageSize(size) || size
+  if (!policy.allowedSizeTiers) {
+    return {
+      size: normalizedSize,
+      clamped: false,
+      source: policy.source,
+    }
+  }
+
+  const clampedSize = capSizeToFrontendLimit(normalizedSize)
+  return {
+    size: clampedSize,
+    clamped: clampedSize !== normalizedSize,
+    source: policy.source,
+  }
+}
+
+export function applySizeSelectionByApiKey(
+  size: string,
+  apiKey: string | undefined | null,
+): string {
+  return resolveSizeSelectionByApiKey(size, apiKey).size
 }
 
 export function createApiAuthorizationHeaders(apiKey: string, useApiProxy: boolean): Record<string, string> {
@@ -74,4 +141,17 @@ function encodeHeaderValue(value: string): string {
   } catch {
     return value.replace(/[^\w.-]/g, '_')
   }
+}
+
+function capSizeToFrontendLimit(size: string): string {
+  if (size === 'auto') return size
+  const match = size.match(/^(\d+)x(\d+)$/)
+  if (!match) return size
+
+  const width = Number(match[1])
+  const height = Number(match[2])
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return size
+  if (width * height <= 2048 * 2048) return size
+
+  return calculateImageSize('2K', `${width}:${height}`) ?? '2048x2048'
 }

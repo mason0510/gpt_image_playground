@@ -313,8 +313,8 @@ describe('mask draft lifecycle in store actions', () => {
   it('automatically retries transient empty image api responses up to success', async () => {
     vi.useFakeTimers()
     vi.mocked(callImageApi)
-      .mockRejectedValueOnce(new Error('请求失败，请检查接口配置或稍后重试。\n调试编号：img_test_1\n详细原因：服务返回了空响应体，请稍后重试'))
-      .mockRejectedValueOnce(new Error('请求失败，请检查接口配置或稍后重试。\n调试编号：img_test_2\n详细原因：服务返回了空响应体，请稍后重试'))
+      .mockRejectedValueOnce(new Error('这次生成没有成功，请稍后再试一次。\n如果连续失败，请保留调试编号联系我们。\n调试编号：img_test_1\n详细原因：服务返回了空响应体，请稍后重试'))
+      .mockRejectedValueOnce(new Error('这次生成没有成功，请稍后再试一次。\n如果连续失败，请保留调试编号联系我们。\n调试编号：img_test_2\n详细原因：服务返回了空响应体，请稍后重试'))
       .mockResolvedValueOnce({
         images: ['data:image/png;base64,auto-retry-output'],
         actualParams: {},

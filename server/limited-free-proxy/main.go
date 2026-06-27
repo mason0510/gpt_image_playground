@@ -24,15 +24,17 @@ import (
 )
 
 const (
-	limitedFreeSentinel = "__IMAGINATION_SPACE_LIMITED_FREE_KEY__"
-	limitedFreeHeader   = "X-Imagination-Space-Key-Mode"
-	limitedFreeValue    = "limited-free"
-	deviceHeader        = "X-Imagination-Space-Device-Fingerprint"
-	defaultDailyLimit   = 10
-	defaultDaily4KLimit = 5
-	maxImagesPerRequest = 4
-	fourKPixelThreshold = 6_000_000
-	maxImageRetryCount  = 5
+	limitedFreeSentinel           = "__IMAGINATION_SPACE_LIMITED_FREE_KEY__"
+	limitedFreeHeader             = "X-Imagination-Space-Key-Mode"
+	limitedFreeValue              = "limited-free"
+	deviceHeader                  = "X-Imagination-Space-Device-Fingerprint"
+	defaultDailyLimit             = 10
+	defaultDaily4KLimit           = 5
+	maxImagesPerRequest           = 2
+	fourKPixelThreshold           = 6_000_000
+	maxImageRetryCount            = 5
+	imageRetryBackoffSeconds      = 10
+	defaultUpstreamTimeoutSeconds = 240
 )
 
 var hopByHopHeaders = map[string]struct{}{
@@ -52,6 +54,7 @@ type config struct {
 	LimitedFreeKey        string
 	LimitedFreeDailyMax   int
 	LimitedFreeDaily4KMax int
+	UpstreamTimeout       time.Duration
 	RateLimitSalt         string
 	RateLimitStorePath    string
 }
@@ -100,9 +103,10 @@ func main() {
 	}
 
 	log.Printf(
-		"imagination-space-api-proxy listening on %s upstream=%s limited_free_key_configured=%t limited_free_daily_max=%d rate_limit_store_configured=%t",
+		"imagination-space-api-proxy listening on %s upstream=%s upstream_timeout=%s limited_free_key_configured=%t limited_free_daily_max=%d rate_limit_store_configured=%t",
 		cfg.ListenAddr,
 		cfg.UpstreamBase.Redacted(),
+		normalizeUpstreamTimeout(cfg).String(),
 		cfg.LimitedFreeKey != "",
 		cfg.LimitedFreeDailyMax,
 		cfg.RateLimitStorePath != "",
@@ -144,6 +148,14 @@ func loadConfig() (config, error) {
 		}
 		daily4KMax = parsed
 	}
+	upstreamTimeout := time.Duration(defaultUpstreamTimeoutSeconds) * time.Second
+	if raw := strings.TrimSpace(os.Getenv("IMAGINATION_SPACE_UPSTREAM_TIMEOUT_SECONDS")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			return config{}, fmt.Errorf("IMAGINATION_SPACE_UPSTREAM_TIMEOUT_SECONDS 必须是正整数")
+		}
+		upstreamTimeout = time.Duration(parsed) * time.Second
+	}
 
 	return config{
 		ListenAddr:            listenAddr,
@@ -151,13 +163,22 @@ func loadConfig() (config, error) {
 		LimitedFreeKey:        strings.TrimSpace(os.Getenv("IMAGINATION_SPACE_LIMITED_FREE_API_KEY")),
 		LimitedFreeDailyMax:   dailyMax,
 		LimitedFreeDaily4KMax: daily4KMax,
+		UpstreamTimeout:       upstreamTimeout,
 		RateLimitSalt:         strings.TrimSpace(os.Getenv("IMAGINATION_SPACE_RATE_LIMIT_SALT")),
 		RateLimitStorePath:    strings.TrimSpace(os.Getenv("IMAGINATION_SPACE_RATE_LIMIT_STORE_PATH")),
 	}, nil
 }
 
+func normalizeUpstreamTimeout(cfg config) time.Duration {
+	if cfg.UpstreamTimeout > 0 {
+		return cfg.UpstreamTimeout
+	}
+	return time.Duration(defaultUpstreamTimeoutSeconds) * time.Second
+}
+
 func newProxyHandler(cfg config) http.Handler {
-	client := &http.Client{Timeout: 15 * time.Minute}
+	upstreamTimeout := normalizeUpstreamTimeout(cfg)
+	client := &http.Client{Timeout: upstreamTimeout}
 	limiter := newFreeUsageLimiter(cfg)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
@@ -207,6 +228,16 @@ func newProxyHandler(cfg config) http.Handler {
 				r.Body = io.NopCloser(bytes.NewReader(body))
 			}
 			if cost.Total > 0 {
+				if cost.FourK > 0 {
+					writeJSON(w, http.StatusBadRequest, map[string]any{
+						"error": map[string]any{
+							"message": "限时免费 key 只开放 1K / 2K；如需 4K，请切换为自己的 API Key。",
+							"type":    "invalid_request_error",
+							"code":    "free_request_4k_not_allowed",
+						},
+					})
+					return
+				}
 				if cost.Total > maxImagesPerRequest {
 					w.Header().Set("X-Imagination-Space-Free-Max-Per-Request", strconv.Itoa(maxImagesPerRequest))
 					writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -284,6 +315,17 @@ func newProxyHandler(cfg config) http.Handler {
 			if errors.Is(err, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
 				return
 			}
+			if isTimeoutError(err) {
+				log.Printf("upstream_timeout method=%s path=%s timeout=%s err=%v", r.Method, sanitizePath(r.URL), upstreamTimeout, err)
+				writeJSON(w, http.StatusGatewayTimeout, map[string]any{
+					"error": map[string]any{
+						"message": fmt.Sprintf("上游生图超过 %d 秒仍未完成，请稍后重试或降低尺寸/质量。", int(upstreamTimeout.Seconds())),
+						"type":    "upstream_timeout",
+						"code":    "upstream_timeout",
+					},
+				})
+				return
+			}
 			log.Printf("upstream_error method=%s path=%s err=%v", r.Method, sanitizePath(r.URL), err)
 			writeProxyError(w, http.StatusBadGateway, "上游代理请求失败")
 			return
@@ -294,7 +336,7 @@ func newProxyHandler(cfg config) http.Handler {
 				resp.Header.Get("X-Request-Id"), resp.Header.Get("Cf-Ray"), resp.Header.Get("Server"), resp.Header.Get("Via"))
 			writeJSON(w, http.StatusBadGateway, map[string]any{
 				"error": map[string]any{
-					"message": fmt.Sprintf("上游返回空响应体（upstream_status=%d, content_type=%q）", resp.StatusCode, resp.Header.Get("Content-Type")),
+					"message": fmt.Sprintf("上游这次返回了空结果，系统已自动间隔 %d 秒重试但仍失败。本次不扣免费次数，请稍后直接重试。（upstream_status=%d, content_type=%q）", imageRetryBackoffSeconds, resp.StatusCode, resp.Header.Get("Content-Type")),
 					"type":    "upstream_error",
 					"code":    "empty_upstream_body",
 				},
@@ -347,6 +389,9 @@ func doUpstreamRequestWithRetry(client *http.Client, req *http.Request) (*http.R
 			if errors.Is(err, context.Canceled) || errors.Is(clonedReq.Context().Err(), context.Canceled) {
 				return nil, nil, err
 			}
+			if isTimeoutError(err) {
+				return nil, nil, err
+			}
 		}
 		if attempt == attempts {
 			break
@@ -357,6 +402,17 @@ func doUpstreamRequestWithRetry(client *http.Client, req *http.Request) (*http.R
 		return lastResp, lastBody, nil
 	}
 	return nil, nil, lastErr
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if os.IsTimeout(err) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func doSingleUpstreamRequest(client *http.Client, req *http.Request) (*http.Response, []byte, error) {
@@ -425,11 +481,11 @@ func shouldRetryUpstreamResponse(req *http.Request, resp *http.Response, body []
 	return false
 }
 
-func imageRetryBackoff(attempt int) time.Duration {
+var imageRetryBackoff = func(attempt int) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
-	return time.Duration(attempt) * 200 * time.Millisecond
+	return time.Duration(imageRetryBackoffSeconds) * time.Second
 }
 
 type allowResult struct {

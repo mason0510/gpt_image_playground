@@ -103,7 +103,7 @@ export function appendTraceIdToMessage(message: string, traceId?: string): strin
 export function formatHttpApiErrorMessage(message: string, traceId?: string): string {
   if (!traceId) return message
   if (message.includes('调试编号：')) return message
-  return `请求失败，请检查接口配置或稍后重试。\n调试编号：${traceId}\n详细原因：${message}`
+  return `这次生成没有成功，请稍后再试一次。\n如果连续失败，请保留调试编号联系我们。\n调试编号：${traceId}\n详细原因：${message}`
 }
 
 export function getApiTraceIdFromResponse(response: Response): string | undefined {
@@ -121,8 +121,8 @@ export function formatNetworkApiError(err: unknown, traceId: string): Error {
   if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return err
   const rawMessage = err instanceof Error ? err.message : String(err)
   const message = /failed to fetch|fetch failed|load failed|networkerror|network request failed/i.test(rawMessage)
-    ? `请求未发出或被浏览器拦截。\n调试编号：${traceId}\n详细原因：${rawMessage}\n可能原因：网络中断、浏览器扩展拦截、旧缓存、CORS/代理不可达。`
-    : `请求失败，请检查接口配置或稍后重试。\n调试编号：${traceId}\n详细原因：${rawMessage}`
+    ? `这次请求没能成功发出，可能在浏览器侧被中断了。\n请先刷新页面后再试一次。\n调试编号：${traceId}\n详细原因：${rawMessage}\n可能原因：网络中断、浏览器扩展拦截、旧缓存、CORS/代理不可达。`
+    : `这次生成没有成功，请稍后再试一次。\n如果连续失败，请保留调试编号联系我们。\n调试编号：${traceId}\n详细原因：${rawMessage}`
   return new Error(message)
 }
 

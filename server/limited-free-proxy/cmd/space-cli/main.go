@@ -427,7 +427,7 @@ func saveImageResponse(respBody []byte, status int, outDir, defaultExt string, o
 	}
 	if strings.TrimSpace(opts.APIKey) == "" {
 		fmt.Println("mode: limited-free")
-		fmt.Println("note: 仍受每天 10 张、其中 4K 最多 5 张、单次最多 4 张、文生图/改图合计限制。")
+		fmt.Println("note: 仍受每天 10 张、单次最多 2 张、仅 1K/2K、文生图/改图合计限制。")
 	}
 	return nil
 }
@@ -608,7 +608,7 @@ func printUsage(w io.Writer) {
   space-cli generate --api-key sk-xxx --prompt "自定义 key 生图"
 
 说明：
-- limited-free 模式仍受每天 10 张、其中 4K 最多 5 张、单次最多 4 张、文生图/改图合计限制。
+- limited-free 模式仍受每天 10 张、单次最多 2 张、仅 1K/2K、文生图/改图合计限制。
 - 若要与某个固定设备指纹保持一致，可手动传 --device-fingerprint。
 - --print-curl 只打印等价后端请求，便于对照 web / api-proxy 调用。`)
 }

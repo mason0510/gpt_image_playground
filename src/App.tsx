@@ -21,6 +21,7 @@ import ImageContextMenu from './components/ImageContextMenu'
 import SupportPromptModal from './components/SupportPromptModal'
 import AnnouncementModal from './components/AnnouncementModal'
 import ComplianceGate from './components/ComplianceGate'
+import DebugPage from './components/DebugPage'
 import { FavoriteCollectionPickerModal, FavoriteCollectionsView, ManageCollectionsModal } from './components/FavoriteCollections'
 import { useGlobalClickSuppression } from './lib/clickSuppression'
 
@@ -149,5 +150,5 @@ function DebugApp() {
 
 export default function App() {
   const isDebugPath = typeof window !== 'undefined' && window.location.pathname.replace(/\/$/, '') === '/debug'
-  return isDebugPath ? <DebugApp /> : <DebugApp />
+  return isDebugPath ? <DebugPage /> : <DebugApp />
 }

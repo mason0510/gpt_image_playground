@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { normalizeBaseUrl } from '../lib/api'
-import { getApiKeySource, isLimitedFreeApiKey, LIMITED_FREE_API_KEY_SENTINEL } from '../lib/apiKeyMode'
+import {
+  getApiKeySource,
+  isLimitedFreeApiKey,
+  LIMITED_FREE_API_KEY_SENTINEL,
+  LIMITED_FREE_API_KEY_LABEL,
+  CUSTOM_API_KEY_LABEL,
+} from '../lib/apiKeyMode'
 import { isApiProxyAvailable, readClientDevProxyConfig } from '../lib/devProxy'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
@@ -1718,7 +1724,7 @@ export default function SettingsModal() {
                     </button>
                   </div>
                   <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
-                    {limitedFreeSelected ? '限时免费 key 固定通过站内同源代理转发；切换为自定义 API Key 后可填写自己的 API URL。' : '开启后请求经服务器转发到上游 API；关闭后将使用上方 API URL 直连。'}
+                    {limitedFreeSelected ? `${LIMITED_FREE_API_KEY_LABEL} 固定通过站内同源代理转发；切换为 ${CUSTOM_API_KEY_LABEL} 后可填写自己的 API URL。` : '开启后请求经服务器转发到上游 API；关闭后将使用上方 API URL 直连。'}
                   </div>
                 </div>
               )}
@@ -1726,7 +1732,7 @@ export default function SettingsModal() {
               {/* 5. API Key */}
               <div className="block">
                 <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">
-                  使用方式 <span className="text-xs font-normal text-gray-400 dark:text-gray-500">（限时免费每天 10 张，其中 4K 最多 5 张，文生图/改图合计；你也可以随时切到自己的平台）</span>
+                  使用方式 <span className="text-xs font-normal text-gray-400 dark:text-gray-500">（{LIMITED_FREE_API_KEY_LABEL}：每天 10 张、单次最多 2 张，当前只开放 1K/2K，文生图/改图合计；你也可以随时切到 {CUSTOM_API_KEY_LABEL}）</span>
                 </span>
                 {canUseLimitedFreeKey && (
                   <div className="mb-2">
@@ -1734,15 +1740,15 @@ export default function SettingsModal() {
                       value={apiKeySource}
                       onChange={handleApiKeySourceChange}
                       options={[
-                        { label: '限时免费（默认，每天 10 张，其中 4K 最多 5 张）', value: 'limited-free' },
-                        { label: '自定义 API Key', value: 'custom' },
+                        { label: `${LIMITED_FREE_API_KEY_LABEL}（默认，每天 10 张、单次最多 2 张，当前只开放 1K/2K）`, value: 'limited-free' },
+                        { label: CUSTOM_API_KEY_LABEL, value: 'custom' },
                       ]}
                     />
                   </div>
                 )}
                 {apiKeySource === 'limited-free' ? (
                   <div className="rounded-xl border border-blue-200/70 bg-blue-50/80 px-3 py-2.5 text-xs leading-5 text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200">
-                    现在就是限时免费模式：每天 10 张，其中 4K 最多 5 张，文生图/改图合计，直接用就行。请求会通过站内代理转发，页面不会展示真实 key。要改成你自己的 API Key、Base URL 或其他平台，再切到「自定义 API Key」即可。
+                    现在就是{LIMITED_FREE_API_KEY_LABEL}：每天 10 张、单次最多 2 张，当前只开放 1K/2K，文生图/改图合计，直接用就行。请求会通过站内代理转发，页面不会展示真实 key。要改成你自己的 API Key、Base URL 或其他平台，再切到「{CUSTOM_API_KEY_LABEL}」即可。
                   </div>
                 ) : (
                   <div className="relative">

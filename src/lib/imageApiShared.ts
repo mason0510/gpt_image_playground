@@ -177,12 +177,8 @@ function pickJsonErrorCode(value: unknown): string | undefined {
 }
 
 export function normalizeApiErrorMessage(message: string): string {
-  const text = message.trim()
-  if (!text) return '服务返回了空响应体，请稍后重试'
-  if (/Unexpected end of JSON input|Failed to execute 'json' on 'Response'/i.test(text)) {
-    return '服务返回了空响应体，请稍后重试'
-  }
-  return text
+  // 用户要求：任何报错原路返回给用户。这里不再把上游/代理错误改写成友好文案。
+  return message.trim() || message
 }
 
 function formatResponseContext(response: Response): string {

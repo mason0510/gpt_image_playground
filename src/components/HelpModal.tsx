@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import type { AppMode } from '../types'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
+import { CUSTOM_API_KEY_LABEL, LIMITED_FREE_API_KEY_LABEL } from '../lib/apiKeyMode'
 
 interface HelpModalProps {
   appMode: AppMode
@@ -66,14 +67,14 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
             <h4 className="mb-3 text-sm font-semibold text-blue-900 dark:text-blue-200">快速开始</h4>
             {isAgentMode ? (
               <ol className="list-decimal pl-4 space-y-2 text-blue-900/90 dark:text-blue-100/90">
-                <li>先点右上角 <strong>设置</strong>，在 API Key 处选择 <strong>限时免费 key</strong>（每天 10 张，其中 4K 最多 5 张，文生图/改图合计）体验，或切到 <strong>自定义 API Key</strong> 填写自己的 key。</li>
+                <li>先点右上角 <strong>设置</strong>，在 API Key 处选择 <strong>{LIMITED_FREE_API_KEY_LABEL}</strong>（每天 10 张、单次最多 2 张，当前只开放 1K/2K，文生图/改图合计）体验，或切到 <strong>{CUSTOM_API_KEY_LABEL}</strong> 填写自己的 key。</li>
                 <li>把服务模式切到 <strong>Agent</strong>，直接输入你的任务，例如“根据这张参考图生成海报”。</li>
                 <li>需要联网时，到设置里开启 <strong>网络搜索</strong>；需要引用图片时，在输入框里输入 <strong>@</strong> 选择图片。</li>
                 <li>生成结果会自动同步到画廊，方便继续编辑、收藏和下载。</li>
               </ol>
             ) : (
               <ol className="list-decimal pl-4 space-y-2 text-blue-900/90 dark:text-blue-100/90">
-                <li>先点右上角 <strong>设置</strong>，在 API Key 处选择 <strong>限时免费 key</strong>（每天 10 张，其中 4K 最多 5 张，文生图/改图合计）体验，或切到 <strong>自定义 API Key</strong> 填写自己的 key。</li>
+                <li>先点右上角 <strong>设置</strong>，在 API Key 处选择 <strong>{LIMITED_FREE_API_KEY_LABEL}</strong>（每天 10 张、单次最多 2 张，当前只开放 1K/2K，文生图/改图合计）体验，或切到 <strong>{CUSTOM_API_KEY_LABEL}</strong> 填写自己的 key。</li>
                 <li>回到画廊页，在输入框中填写提示词；如需改图，可上传参考图或遮罩图。</li>
                 <li>点击生成后，结果会出现在历史任务列表中；点开任务卡片可查看大图、下载或继续编辑。</li>
                 <li>如果要批量整理结果，可使用收藏夹、多选、批量下载等功能。</li>
@@ -147,7 +148,7 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
                 </h4>
                 <div className="space-y-4">
                   <ul className="list-disc pl-4 space-y-2">
-                    <li>首次进入建议先打开右上角 <strong>设置</strong>：可选择 <strong>限时免费 key</strong>（每天 10 张，其中 4K 最多 5 张，文生图/改图合计）快速体验，也可填写自己的 API Key。</li>
+                    <li>首次进入建议先打开右上角 <strong>设置</strong>：可选择 <strong>{LIMITED_FREE_API_KEY_LABEL}</strong>（每天 10 张、单次最多 2 张，当前只开放 1K/2K，文生图/改图合计）快速体验，也可填写自己的 API Key。</li>
                     <li>历史任务支持左右滑动多选；点开任务卡片可看大图、下载或再次编辑。</li>
                     <li>如果想像 App 一样使用，可点右上角安装按钮添加到主屏幕。</li>
                   </ul>
@@ -187,7 +188,7 @@ export default function HelpModal({ appMode, isFavoriteCollectionOverview = fals
                 </h4>
                 <div className="space-y-4">
                   <ul className="list-disc pl-4 space-y-2">
-                    <li>先完成接口配置：可选择 <strong>限时免费 key</strong>（每天 10 张，其中 4K 最多 5 张，文生图/改图合计）快速体验，也可填写自己的 API Key，再开始生成。</li>
+                    <li>先完成接口配置：可选择 <strong>{LIMITED_FREE_API_KEY_LABEL}</strong>（每天 10 张、单次最多 2 张，当前只开放 1K/2K，文生图/改图合计）快速体验，也可填写自己的 API Key，再开始生成。</li>
                     <li>生成后可直接点开任务卡片查看大图、重试、加入收藏夹或继续编辑。</li>
                     <li>批量整理图片时，优先用框选、多选和批量下载。</li>
                   </ul>

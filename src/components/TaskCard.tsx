@@ -323,6 +323,7 @@ export default function TaskCard({
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
   const isInterrupted = task.status === 'error' && task.error === '已停止生成。'
+  const isUpstreamTimeout = task.status === 'error' && /upstream_timeout|上游生图等待超时|上游生图超过/.test(task.error || '')
 
   const handleDownloadStreamPreview = async () => {
     if (!streamPreviewSrc) return
@@ -559,6 +560,12 @@ export default function TaskCard({
             )}
           </div>
           <div className="mt-auto flex flex-col gap-1.5">
+            {isUpstreamTimeout && (
+              <div className="rounded-lg border border-amber-200/80 bg-amber-50 px-2.5 py-2 text-xs leading-relaxed text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+                <div className="font-medium">上游生成等待过久，已自动停止。</div>
+                <div className="mt-0.5">本次不会继续空等。你可以点「重试」，或改用 1K / 2K 后再试。</div>
+              </div>
+            )}
             {/* 参数与信息：横向滚动 */}
             <div 
               data-tag-scroll-area

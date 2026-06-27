@@ -4,7 +4,9 @@ import { ALL_FAVORITES_COLLECTION_ID, deleteFavoriteCollection, getTaskFavoriteC
 import { DEFAULT_PARAMS, type TaskRecord } from '../types'
 import { getActiveApiProfile, isBuiltInOpenAICompatibleProvider, normalizeSettings } from '../lib/apiProfiles'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
+import { applySizeSelectionByApiKey } from '../lib/apiKeyMode'
 import { formatPromptForImageGeneration } from '../lib/promptFormatter'
+import { CUSTOM_API_KEY_LABEL, LIMITED_FREE_API_KEY_LABEL } from '../lib/apiKeyMode'
 import { getAtImageQuery, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, getSelectedImageMentionLabel, getSelectedTextMentionLabel, imageMentionMatches, insertImageMentionAtVisibleRange, insertTextMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
 import { normalizeImageSize } from '../lib/size'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
@@ -797,9 +799,11 @@ export default function InputBar() {
   const streamConcurrentByN = isBuiltInOpenAICompatibleProvider(activeProfile.provider) && activeProfile.streamImages === true && !agentAutoImageCount && effectiveNValue > 1
   const nLimitHintText = agentAutoImageCount
     ? 'Agent 模式下数量由模型根据提示词自动决定'
+    : outputImageLimit == null
+    ? `${CUSTOM_API_KEY_LABEL}不限制单次生成张数`
     : isFalProvider
     ? `旧版兼容配置最大请求数量为 ${outputImageLimit}`
-    : `${activeProfile.provider === 'sublb' ? 'SubLB' : 'OpenAI'} 最大请求数量为 ${outputImageLimit}`
+    : `${LIMITED_FREE_API_KEY_LABEL}单次最多生成 ${outputImageLimit} 张；${CUSTOM_API_KEY_LABEL}不限制张数`
   const displaySize = isFalTextToImage && params.size === 'auto'
     ? DEFAULT_FAL_IMAGE_SIZE
     : normalizeImageSize(params.size) || DEFAULT_PARAMS.size
@@ -1030,7 +1034,7 @@ export default function InputBar() {
     const nextValue = Number(nInput)
     const normalizedValue =
       nInput.trim() === '' ? DEFAULT_PARAMS.n : Number.isNaN(nextValue) ? params.n : nextValue
-    const clampedValue = Math.min(outputImageLimit, Math.max(1, normalizedValue))
+    const clampedValue = outputImageLimit == null ? Math.max(1, normalizedValue) : Math.min(outputImageLimit, Math.max(1, normalizedValue))
     setNInput(String(clampedValue))
     setParams({ n: clampedValue })
   }, [agentAutoImageCount, nInput, nLimitHint, outputImageLimit, params.n, setParams])
@@ -1063,7 +1067,7 @@ export default function InputBar() {
     }
     setNInput(value)
     const nextValue = Number(value)
-    if (!Number.isNaN(nextValue) && nextValue > outputImageLimit) {
+    if (!Number.isNaN(nextValue) && outputImageLimit != null && nextValue > outputImageLimit) {
       showNLimitHint()
     } else {
       hideNLimitHint()
@@ -1078,7 +1082,7 @@ export default function InputBar() {
     }
     const currentValue = Number(nInput)
     const effectiveValue = Number.isNaN(currentValue) ? params.n : currentValue
-    if (!nInputFocused || effectiveValue < outputImageLimit) return
+    if (!nInputFocused || outputImageLimit == null || effectiveValue < outputImageLimit) return
 
     preventDefault()
     showNLimitHint()
@@ -2151,9 +2155,12 @@ export default function InputBar() {
       {showSizePicker && (
         <SizePickerModal
           currentSize={isFalTextToImage && params.size === 'auto' ? DEFAULT_FAL_IMAGE_SIZE : params.size}
-          onSelect={(size) => setParams({ size })}
+          onSelect={(size) => {
+            setParams({ size: applySizeSelectionByApiKey(size, activeProfile.apiKey) })
+          }}
           onClose={() => setShowSizePicker(false)}
           allowAuto={!isFalTextToImage}
+          apiKey={activeProfile.apiKey}
         />
       )}
 

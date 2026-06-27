@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { calculateImageSize, normalizeImageSize, parseRatio, type SizeTier } from '../lib/size'
+import {
+  applySizeSelectionByApiKey,
+  CUSTOM_API_KEY_LABEL,
+  getApiKeyUsagePolicy,
+  LIMITED_FREE_API_KEY_LABEL,
+  resolveSizeSelectionByApiKey,
+} from '../lib/apiKeyMode'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import ViewportTooltip from './ViewportTooltip'
 
 const TIERS: SizeTier[] = ['1K', '2K', '4K']
-const SIZE_LIMIT_TEXT = '由于模型限制，最终输出会自动规整到合法尺寸：\n宽高均为 16 的倍数，最大边长 3840px，宽高比不超过 3:1，总像素限制为 655360-8294400。'
 const RATIOS = [
   { label: '1:1', value: '1:1' },
   { label: '3:2', value: '3:2' },
@@ -21,6 +27,7 @@ interface Props {
   onSelect: (size: string) => void
   onClose: () => void
   allowAuto?: boolean
+  apiKey?: string
 }
 
 type Mode = 'auto' | 'ratio' | 'resolution'
@@ -43,7 +50,7 @@ function findPresetForSize(size: string) {
   return null
 }
 
-export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true }: Props) {
+export default function SizePickerModal({ currentSize, onSelect, onClose, allowAuto = true, apiKey }: Props) {
   usePreventBackgroundScroll(true)
 
   const modalRef = useRef<HTMLDivElement>(null)
@@ -69,16 +76,22 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
     mouseDownTargetRef.current = null
   }
 
+  const usagePolicy = useMemo(() => getApiKeyUsagePolicy(apiKey), [apiKey])
+  const enabledTiers = useMemo(() => new Set<SizeTier>(usagePolicy.allowedSizeTiers ?? TIERS), [usagePolicy.allowedSizeTiers])
+  const customResolutionDisabled = !usagePolicy.allowCustomResolution
+  const sizeLimitText = usagePolicy.source === 'limited-free'
+    ? `${LIMITED_FREE_API_KEY_LABEL}当前只开放 1K / 2K；如果需要 4K 或自定义尺寸，请切换为${CUSTOM_API_KEY_LABEL}。`
+    : ''
   const currentPreset = findPresetForSize(currentSize)
   const currentParsedSize = parseSize(currentSize)
   const [mode, setMode] = useState<Mode>(() => {
     if (!currentSize || currentSize === 'auto') return allowAuto ? 'auto' : 'ratio'
     if (currentPreset) return 'ratio'
-    return 'resolution'
+    return customResolutionDisabled ? 'ratio' : 'resolution'
   })
 
   // Ratio mode state
-  const [tier, setTier] = useState<SizeTier>(currentPreset?.tier ?? '1K')
+  const [tier, setTier] = useState<SizeTier>(currentPreset?.tier && enabledTiers.has(currentPreset.tier) ? currentPreset.tier : currentPreset?.tier === '4K' ? '2K' : '1K')
   const [ratio, setRatio] = useState(currentPreset?.ratio ?? (allowAuto ? '1:1' : '4:3'))
   const [customRatio, setCustomRatio] = useState('16:9')
 
@@ -93,6 +106,10 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
     if (hintTimerRef.current != null) window.clearTimeout(hintTimerRef.current)
   }, [])
 
+  useEffect(() => {
+    if (!enabledTiers.has(tier)) setTier(enabledTiers.has('2K') ? '2K' : '1K')
+  }, [enabledTiers, tier])
+
   const activeRatio = ratio === 'custom' ? customRatio : ratio
   const parsedCustomRatio = parseRatio(customRatio)
   const customRatioValid = ratio !== 'custom' || Boolean(parsedCustomRatio)
@@ -102,7 +119,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
     Math.max(parsedCustomRatio.width, parsedCustomRatio.height) / Math.min(parsedCustomRatio.width, parsedCustomRatio.height) > 3,
   )
 
-  const previewSize = useMemo(() => {
+  const rawPreviewSize = useMemo(() => {
     if (mode === 'auto') return 'auto'
     
     if (mode === 'ratio') {
@@ -122,8 +139,15 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
     return ''
   }, [mode, tier, activeRatio, customW, customH])
 
+  const sizeSelection = useMemo(() => resolveSizeSelectionByApiKey(rawPreviewSize || '', apiKey), [rawPreviewSize, apiKey])
+  const previewSize = useMemo(() => {
+    if (!rawPreviewSize || rawPreviewSize === 'auto') return rawPreviewSize
+    return usagePolicy.allowedSizeTiers ? sizeSelection.size : rawPreviewSize
+  }, [rawPreviewSize, usagePolicy.allowedSizeTiers, sizeSelection.size])
+
   const isClamped = useMemo(() => {
     if (!previewSize || previewSize === 'auto') return false
+    if (rawPreviewSize && rawPreviewSize !== previewSize) return true
     if (mode === 'ratio' && ratio === 'custom') return customRatioClamped
     if (mode === 'resolution') {
       const w = parseInt(customW, 10)
@@ -133,7 +157,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
       }
     }
     return false
-  }, [mode, ratio, customRatioClamped, customW, customH, previewSize])
+  }, [mode, ratio, customRatioClamped, customW, customH, rawPreviewSize, previewSize])
 
   const showHint = () => setHintVisible(true)
   const hideHint = () => {
@@ -155,7 +179,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
 
   const applySize = () => {
     if (!previewSize) return
-    onSelect(previewSize)
+    onSelect(applySizeSelectionByApiKey(previewSize, apiKey))
     onClose()
   }
 
@@ -212,7 +236,9 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
             </button>
             <button
               onClick={() => setMode('resolution')}
-              className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition ${mode === 'resolution' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
+              disabled={customResolutionDisabled}
+              title={customResolutionDisabled ? `${LIMITED_FREE_API_KEY_LABEL}只开放 1K / 2K 预设` : undefined}
+              className={`flex-1 rounded-lg py-1.5 text-sm font-medium transition ${mode === 'resolution' ? 'bg-white text-gray-800 shadow-sm dark:bg-gray-700 dark:text-gray-100' : customResolutionDisabled ? 'cursor-not-allowed text-gray-300 dark:text-gray-600' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
             >
               自定义宽高
             </button>
@@ -242,12 +268,28 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                 <section>
                   <div className="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">基准分辨率</div>
                   <div className="grid grid-cols-3 gap-2">
-                    {TIERS.map((item) => (
-                      <button key={item} className={buttonClass(tier === item)} onClick={() => setTier(item)}>
-                        {item}
+                    {TIERS.map((item) => {
+                      const disabled = !enabledTiers.has(item)
+                      return (
+                      <button
+                        key={item}
+                        className={disabled ? 'cursor-not-allowed rounded-xl border border-gray-200/60 bg-gray-50/70 px-3 py-2 text-sm text-gray-300 dark:border-white/[0.06] dark:bg-white/[0.02] dark:text-gray-600' : buttonClass(tier === item && enabledTiers.has(item))}
+                        disabled={disabled}
+                        title={disabled ? `${LIMITED_FREE_API_KEY_LABEL}不开放 4K；请切换为${CUSTOM_API_KEY_LABEL}` : undefined}
+                        onClick={() => {
+                          if (!disabled) setTier(item)
+                        }}
+                      >
+                        {item}{disabled ? ' 免费不可用' : ''}
                       </button>
-                    ))}
+                      )
+                    })}
                   </div>
+                  {sizeLimitText && (
+                    <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
+                      {sizeLimitText}
+                    </p>
+                  )}
                 </section>
 
                 <section>
@@ -337,7 +379,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                     <svg className="mt-[2px] h-4 w-4 flex-shrink-0 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
-                    <div className="whitespace-pre-line leading-relaxed">{SIZE_LIMIT_TEXT}</div>
+                    <div className="whitespace-pre-line leading-relaxed">{sizeLimitText || `自定义尺寸将按当前 ${CUSTOM_API_KEY_LABEL} 原样提交。`}</div>
                   </div>
                 </div>
               </div>
@@ -364,7 +406,7 @@ export default function SizePickerModal({ currentSize, onSelect, onClose, allowA
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                   <ViewportTooltip visible={hintVisible} className="w-56 whitespace-pre-line text-center">
-                    {SIZE_LIMIT_TEXT}
+                    {sizeLimitText || `自定义尺寸将按当前 ${CUSTOM_API_KEY_LABEL} 原样提交。`}
                   </ViewportTooltip>
                 </div>
               )}

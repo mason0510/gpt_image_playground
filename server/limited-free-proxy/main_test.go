@@ -13,7 +13,17 @@ import (
 	"time"
 )
 
+func useFastImageRetryBackoff(t *testing.T) {
+	t.Helper()
+	previous := imageRetryBackoff
+	imageRetryBackoff = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() {
+		imageRetryBackoff = previous
+	})
+}
+
 func TestLimitedFreeImageRequestRetriesUpToFiveTimesOn502(t *testing.T) {
+	useFastImageRetryBackoff(t)
 	upstreamHits := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
@@ -50,6 +60,7 @@ func TestLimitedFreeImageRequestRetriesUpToFiveTimesOn502(t *testing.T) {
 }
 
 func TestLimitedFreeImageRequestRetriesUpToFiveTimesOnEmpty200Body(t *testing.T) {
+	useFastImageRetryBackoff(t)
 	upstreamHits := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
@@ -81,6 +92,63 @@ func TestLimitedFreeImageRequestRetriesUpToFiveTimesOnEmpty200Body(t *testing.T)
 	}
 	if upstreamHits != 5 {
 		t.Fatalf("expected 5 upstream attempts on empty 200 body, got %d", upstreamHits)
+	}
+}
+
+func TestLimitedFreeUpstreamTimeoutReturns504WithoutRetryOrQuotaCharge(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		time.Sleep(200 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"b64_json": "late"}},
+		})
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	handler := newProxyHandler(config{
+		UpstreamBase:          upstreamURL,
+		LimitedFreeKey:        "test-free-key",
+		LimitedFreeDailyMax:   10,
+		LimitedFreeDaily4KMax: 5,
+		UpstreamTimeout:       20 * time.Millisecond,
+		RateLimitSalt:         "test-salt",
+		RateLimitStorePath:    filepath.Join(t.TempDir(), "usage.json"),
+	})
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if resp.Code != http.StatusGatewayTimeout {
+		t.Fatalf("timeout request status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("timeout should not be retried, upstreamHits=%d", upstreamHits)
+	}
+	var payload map[string]map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["error"]["code"] != "upstream_timeout" {
+		t.Fatalf("unexpected timeout payload=%v", payload)
+	}
+
+	quotaResp := httptest.NewRecorder()
+	handler.ServeHTTP(quotaResp, limitedFreeQuotaRequest())
+	if quotaResp.Code != http.StatusOK {
+		t.Fatalf("quota status=%d body=%s", quotaResp.Code, quotaResp.Body.String())
+	}
+	var quotaPayload struct {
+		Quota struct {
+			Used      int `json:"used"`
+			Remaining int `json:"remaining"`
+		} `json:"quota"`
+	}
+	if err := json.Unmarshal(quotaResp.Body.Bytes(), &quotaPayload); err != nil {
+		t.Fatal(err)
+	}
+	if quotaPayload.Quota.Used != 0 || quotaPayload.Quota.Remaining != 10 {
+		t.Fatalf("timeout should not consume quota, quota=%+v", quotaPayload.Quota)
 	}
 }
 
@@ -143,7 +211,7 @@ func TestLimitedFreeDailyLimitCountsImagesNAndRejectsOverflow(t *testing.T) {
 	cfg := config{
 		UpstreamBase:          upstreamURL,
 		LimitedFreeKey:        "test-free-key",
-		LimitedFreeDailyMax:   8,
+		LimitedFreeDailyMax:   4,
 		LimitedFreeDaily4KMax: 5,
 		RateLimitSalt:         "test-salt",
 		RateLimitStorePath:    filepath.Join(t.TempDir(), "usage.json"),
@@ -151,7 +219,7 @@ func TestLimitedFreeDailyLimitCountsImagesNAndRejectsOverflow(t *testing.T) {
 	handler := newProxyHandler(cfg)
 
 	for i := 0; i < 2; i++ {
-		req := limitedFreeJSONRequest(t, `{"n":4}`)
+		req := limitedFreeJSONRequest(t, `{"n":2}`)
 		resp := httptest.NewRecorder()
 		handler.ServeHTTP(resp, req)
 		if resp.Code != http.StatusOK {
@@ -250,8 +318,8 @@ func TestLimitedFreeRejectsTooManyImagesPerRequest(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
 	}
-	if got := resp.Header().Get("X-Imagination-Space-Free-Max-Per-Request"); got != "4" {
-		t.Fatalf("expected max per request header 4, got %q", got)
+	if got := resp.Header().Get("X-Imagination-Space-Free-Max-Per-Request"); got != "2" {
+		t.Fatalf("expected max per request header 2, got %q", got)
 	}
 	var payload map[string]map[string]any
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
@@ -336,7 +404,7 @@ func TestLimitedFreeQuotaEndpointReturnsUsageWithoutTouchingUpstream(t *testing.
 	})
 
 	firstResp := httptest.NewRecorder()
-	handler.ServeHTTP(firstResp, limitedFreeJSONRequest(t, `{"n":3}`))
+	handler.ServeHTTP(firstResp, limitedFreeJSONRequest(t, `{"n":2}`))
 	if firstResp.Code != http.StatusOK {
 		t.Fatalf("seed request status=%d body=%s", firstResp.Code, firstResp.Body.String())
 	}
@@ -372,7 +440,7 @@ func TestLimitedFreeQuotaEndpointReturnsUsageWithoutTouchingUpstream(t *testing.
 	if payload.Mode != limitedFreeValue {
 		t.Fatalf("unexpected mode=%q", payload.Mode)
 	}
-	if payload.Quota.Used != 3 || payload.Quota.Remaining != 7 || payload.Quota.Limit != 10 {
+	if payload.Quota.Used != 2 || payload.Quota.Remaining != 8 || payload.Quota.Limit != 10 {
 		t.Fatalf("unexpected quota payload=%+v", payload.Quota)
 	}
 	if payload.Quota.Used4K != 0 || payload.Quota.Remaining4K != 5 || payload.Quota.Limit4K != 5 {
@@ -420,7 +488,7 @@ func TestLimitedFreeMultipartEditCountsNAgainstDailyLimit(t *testing.T) {
 	}
 }
 
-func TestLimitedFree4KDailyLimitRejectsSixth4KImage(t *testing.T) {
+func TestLimitedFree4KGenerationDoesNotReachUpstreamOrConsumeQuota(t *testing.T) {
 	upstreamHits := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
@@ -441,70 +509,28 @@ func TestLimitedFree4KDailyLimitRejectsSixth4KImage(t *testing.T) {
 		RateLimitStorePath:    filepath.Join(t.TempDir(), "usage.json"),
 	})
 
-	for i := 0; i < 5; i++ {
-		resp := httptest.NewRecorder()
-		handler.ServeHTTP(resp, limitedFreeJSONRequest(t, `{"n":1,"size":"2304x3456"}`))
-		if resp.Code != http.StatusOK {
-			t.Fatalf("seed 4k request %d status=%d body=%s", i+1, resp.Code, resp.Body.String())
-		}
-	}
-
-	overflow := httptest.NewRecorder()
-	handler.ServeHTTP(overflow, limitedFreeJSONRequest(t, `{"n":1,"size":"2304x3456"}`))
-	if overflow.Code != http.StatusTooManyRequests {
-		t.Fatalf("sixth 4k request should be rejected, got %d body=%s", overflow.Code, overflow.Body.String())
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, limitedFreeJSONRequest(t, `{"n":1,"size":"2304x3456"}`))
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("4k request should be rejected, got %d body=%s", resp.Code, resp.Body.String())
 	}
 	var payload map[string]map[string]any
-	if err := json.Unmarshal(overflow.Body.Bytes(), &payload); err != nil {
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["error"]["code"] != "free_daily_4k_limit" {
+	if payload["error"]["code"] != "free_request_4k_not_allowed" {
 		t.Fatalf("unexpected 4k error payload: %v", payload)
 	}
-	if upstreamHits != 5 {
-		t.Fatalf("overflow 4k request should not reach upstream, upstreamHits=%d", upstreamHits)
-	}
-}
-
-func TestLimitedFreeQuotaTracks4KUsage(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
-	}))
-	defer upstream.Close()
-
-	upstreamURL, err := url.Parse(upstream.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	handler := newProxyHandler(config{
-		UpstreamBase:          upstreamURL,
-		LimitedFreeKey:        "real-free-key",
-		LimitedFreeDailyMax:   10,
-		LimitedFreeDaily4KMax: 5,
-		RateLimitSalt:         "test-salt",
-		RateLimitStorePath:    filepath.Join(t.TempDir(), "usage.json"),
-	})
-
-	resp := httptest.NewRecorder()
-	handler.ServeHTTP(resp, limitedFreeJSONRequest(t, `{"n":2,"size":"3840x2160"}`))
-	if resp.Code != http.StatusOK {
-		t.Fatalf("4k request status=%d body=%s", resp.Code, resp.Body.String())
+	if upstreamHits != 0 {
+		t.Fatalf("limited-free 4k request should not reach upstream, upstreamHits=%d", upstreamHits)
 	}
 
-	quotaReq := httptest.NewRequest(http.MethodGet, "/api-proxy/v1/limited-free/quota", nil)
-	quotaReq.Header.Set("Authorization", "Bearer "+limitedFreeSentinel)
-	quotaReq.Header.Set(limitedFreeHeader, limitedFreeValue)
-	quotaReq.Header.Set(deviceHeader, "device-a")
-	quotaReq.Header.Set("User-Agent", "test-agent")
-	quotaReq.Header.Set("Accept-Language", "zh-CN")
-	quotaReq.RemoteAddr = "203.0.113.10:12345"
 	quotaResp := httptest.NewRecorder()
-	handler.ServeHTTP(quotaResp, quotaReq)
+	handler.ServeHTTP(quotaResp, limitedFreeQuotaRequest())
 	if quotaResp.Code != http.StatusOK {
 		t.Fatalf("quota status=%d body=%s", quotaResp.Code, quotaResp.Body.String())
 	}
-
-	var payload struct {
+	var quotaPayload struct {
 		Quota struct {
 			Used        int `json:"used"`
 			Remaining   int `json:"remaining"`
@@ -513,15 +539,15 @@ func TestLimitedFreeQuotaTracks4KUsage(t *testing.T) {
 			Limit4K     int `json:"limit_4k"`
 		} `json:"quota"`
 	}
-	if err := json.Unmarshal(quotaResp.Body.Bytes(), &payload); err != nil {
+	if err := json.Unmarshal(quotaResp.Body.Bytes(), &quotaPayload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Quota.Used != 2 || payload.Quota.Remaining != 8 || payload.Quota.Used4K != 2 || payload.Quota.Remaining4K != 3 || payload.Quota.Limit4K != 5 {
-		t.Fatalf("unexpected quota payload=%+v", payload.Quota)
+	if quotaPayload.Quota.Used != 0 || quotaPayload.Quota.Remaining != 10 || quotaPayload.Quota.Used4K != 0 || quotaPayload.Quota.Remaining4K != 5 || quotaPayload.Quota.Limit4K != 5 {
+		t.Fatalf("unexpected quota payload=%+v", quotaPayload.Quota)
 	}
 }
 
-func TestLimitedFreeMultipart4KEditCountsAgainst4KLimit(t *testing.T) {
+func TestLimitedFreeMultipart4KEditIsRejectedBeforeUpstream(t *testing.T) {
 	upstreamHits := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
@@ -542,19 +568,16 @@ func TestLimitedFreeMultipart4KEditCountsAgainst4KLimit(t *testing.T) {
 		RateLimitStorePath:    filepath.Join(t.TempDir(), "usage.json"),
 	})
 
-	first := httptest.NewRecorder()
-	handler.ServeHTTP(first, limitedFreeMultipartEditRequestWithSize(t, "3", "2304x3456"))
-	if first.Code != http.StatusOK {
-		t.Fatalf("first 4k edit status=%d body=%s", first.Code, first.Body.String())
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, limitedFreeMultipartEditRequestWithSize(t, "2", "2304x3456"))
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("4k edit should be rejected, got %d body=%s", resp.Code, resp.Body.String())
 	}
-
-	second := httptest.NewRecorder()
-	handler.ServeHTTP(second, limitedFreeMultipartEditRequestWithSize(t, "3", "2304x3456"))
-	if second.Code != http.StatusTooManyRequests {
-		t.Fatalf("second 4k edit should overflow 4k daily limit, got %d body=%s", second.Code, second.Body.String())
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"free_request_4k_not_allowed"`)) {
+		t.Fatalf("expected 4k rejection code, body=%s", resp.Body.String())
 	}
-	if upstreamHits != 1 {
-		t.Fatalf("overflow multipart 4k edit should not reach upstream, upstreamHits=%d", upstreamHits)
+	if upstreamHits != 0 {
+		t.Fatalf("limited-free 4k edit should not reach upstream, upstreamHits=%d", upstreamHits)
 	}
 }
 
@@ -567,6 +590,17 @@ func limitedFreeJSONRequest(t *testing.T, body string) *http.Request {
 	req.Header.Set("User-Agent", "test-agent")
 	req.Header.Set("Accept-Language", "zh-CN")
 	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "203.0.113.10:12345"
+	return req
+}
+
+func limitedFreeQuotaRequest() *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/api-proxy/v1/limited-free/quota", nil)
+	req.Header.Set("Authorization", "Bearer "+limitedFreeSentinel)
+	req.Header.Set(limitedFreeHeader, limitedFreeValue)
+	req.Header.Set(deviceHeader, "device-a")
+	req.Header.Set("User-Agent", "test-agent")
+	req.Header.Set("Accept-Language", "zh-CN")
 	req.RemoteAddr = "203.0.113.10:12345"
 	return req
 }
@@ -660,6 +694,7 @@ func TestLimitedFreeFailedUpstreamDoesNotConsumeDailyQuota(t *testing.T) {
 }
 
 func TestLimitedFreeEmptySuccessBodyRetriesAndStillConsumesQuotaOnce(t *testing.T) {
+	useFastImageRetryBackoff(t)
 	upstreamHits := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
@@ -695,5 +730,106 @@ func TestLimitedFreeEmptySuccessBodyRetriesAndStillConsumesQuotaOnce(t *testing.
 	handler.ServeHTTP(overflowResp, limitedFreeJSONRequest(t, `{"n":1}`))
 	if overflowResp.Code != http.StatusTooManyRequests {
 		t.Fatalf("successful retried request should consume quota once; overflow status=%d body=%s", overflowResp.Code, overflowResp.Body.String())
+	}
+}
+
+func TestLimitedFreePermanentEmptySuccessBodyDoesNotConsumeQuota(t *testing.T) {
+	useFastImageRetryBackoff(t)
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	handler := newProxyHandler(config{
+		UpstreamBase:          upstreamURL,
+		LimitedFreeKey:        "test-free-key",
+		LimitedFreeDailyMax:   1,
+		LimitedFreeDaily4KMax: 5,
+		RateLimitSalt:         "test-salt",
+		RateLimitStorePath:    filepath.Join(t.TempDir(), "usage.json"),
+	})
+
+	failedResp := httptest.NewRecorder()
+	handler.ServeHTTP(failedResp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if failedResp.Code != http.StatusBadGateway {
+		t.Fatalf("permanent empty upstream status=%d body=%s", failedResp.Code, failedResp.Body.String())
+	}
+	if upstreamHits != maxImageRetryCount {
+		t.Fatalf("expected %d upstream attempts, got %d", maxImageRetryCount, upstreamHits)
+	}
+	if !bytes.Contains(failedResp.Body.Bytes(), []byte("本次不扣免费次数")) {
+		t.Fatalf("expected no-charge hint, body=%s", failedResp.Body.String())
+	}
+
+	upstream.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"b64_json": "ok"}}})
+	})
+
+	successResp := httptest.NewRecorder()
+	handler.ServeHTTP(successResp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if successResp.Code != http.StatusOK {
+		t.Fatalf("success after permanent empty body should still be allowed, status=%d body=%s", successResp.Code, successResp.Body.String())
+	}
+
+	overflowResp := httptest.NewRecorder()
+	handler.ServeHTTP(overflowResp, limitedFreeJSONRequest(t, `{"n":1}`))
+	if overflowResp.Code != http.StatusTooManyRequests {
+		t.Fatalf("successful request should consume quota once; overflow status=%d body=%s", overflowResp.Code, overflowResp.Body.String())
+	}
+}
+
+func TestLimitedFreeRejectsMoreThanTwoImagesPerRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("overflow request should not reach upstream")
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	handler := newProxyHandler(config{
+		UpstreamBase:          upstreamURL,
+		LimitedFreeKey:        "test-free-key",
+		LimitedFreeDailyMax:   10,
+		LimitedFreeDaily4KMax: 5,
+		RateLimitSalt:         "test-salt",
+		RateLimitStorePath:    filepath.Join(t.TempDir(), "usage.json"),
+	})
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, limitedFreeJSONRequest(t, `{"n":3,"size":"1024x1024"}`))
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected request image limit, status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"free_request_image_limit"`)) || !bytes.Contains(resp.Body.Bytes(), []byte(`"limit":2`)) {
+		t.Fatalf("expected limit=2 code, body=%s", resp.Body.String())
+	}
+}
+
+func TestLimitedFreeRejects4KRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("4K request should not reach upstream")
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	handler := newProxyHandler(config{
+		UpstreamBase:          upstreamURL,
+		LimitedFreeKey:        "test-free-key",
+		LimitedFreeDailyMax:   10,
+		LimitedFreeDaily4KMax: 5,
+		RateLimitSalt:         "test-salt",
+		RateLimitStorePath:    filepath.Join(t.TempDir(), "usage.json"),
+	})
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, limitedFreeJSONRequest(t, `{"n":1,"size":"3840x2160"}`))
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 4K rejection, status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte(`"code":"free_request_4k_not_allowed"`)) {
+		t.Fatalf("expected 4K rejection code, body=%s", resp.Body.String())
 	}
 }

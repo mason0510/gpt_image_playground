@@ -783,7 +783,7 @@ describe('callImageApi', () => {
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
-    })).rejects.toThrow(/请求失败，请检查接口配置或稍后重试。\n调试编号：img_\d{14}_[a-z0-9]{6}\n详细原因：API key is required/i)
+    })).rejects.toThrow(/这次生成没有成功，请稍后再试一次。\n如果连续失败，请保留调试编号联系我们。\n调试编号：img_\d{14}_[a-z0-9]{6}\n详细原因：API key is required/i)
   })
 
   it('normalizes failed fetch errors with trace id', async () => {
@@ -794,7 +794,7 @@ describe('callImageApi', () => {
       prompt: 'prompt',
       params: { ...DEFAULT_PARAMS },
       inputImageDataUrls: [],
-    })).rejects.toThrow(/请求未发出或被浏览器拦截。\n调试编号：img_\d{14}_[a-z0-9]{6}\n详细原因：Failed to fetch/i)
+    })).rejects.toThrow(/这次请求没能成功发出，可能在浏览器侧被中断了。\n请先刷新页面后再试一次。\n调试编号：img_\d{14}_[a-z0-9]{6}\n详细原因：Failed to fetch/i)
   })
 
   it('ignores stored API proxy settings when the current deployment has no proxy', async () => {

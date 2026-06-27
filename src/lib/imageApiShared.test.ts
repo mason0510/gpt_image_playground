@@ -59,9 +59,35 @@ describe('getApiErrorMessage', () => {
     expect(message).toContain('调试编号：req-upstream-rate-limit')
   })
 
-  it('normalizes raw browser JSON parse errors', () => {
-    expect(normalizeApiErrorMessage('Unexpected end of JSON input')).toBe('服务返回了空响应体，请稍后重试')
-    expect(normalizeApiErrorMessage("Failed to execute 'json' on 'Response': Unexpected end of JSON input")).toBe('服务返回了空响应体，请稍后重试')
+  it('passes raw errors through without friendly rewrite', () => {
+    expect(normalizeApiErrorMessage('Unexpected end of JSON input')).toBe('Unexpected end of JSON input')
+    expect(normalizeApiErrorMessage("Failed to execute 'json' on 'Response': Unexpected end of JSON input")).toBe("Failed to execute 'json' on 'Response': Unexpected end of JSON input")
+    expect(normalizeApiErrorMessage('Service temporarily unavailable')).toBe('Service temporarily unavailable')
+    expect(normalizeApiErrorMessage('上游返回空响应体（upstream_status=200, content_type=""）\n错误代码：empty_upstream')).toBe('上游返回空响应体（upstream_status=200, content_type=""）\n错误代码：empty_upstream')
+  })
+
+  it('passes empty upstream body error through with no-charge retry hint from backend', async () => {
+
+    const message = await getApiErrorMessage(withTrace(new Response(JSON.stringify({
+      error: {
+        message: '上游这次返回了空结果，系统已自动间隔 10 秒重试但仍失败。本次不扣免费次数，请稍后直接重试。（upstream_status=200, content_type=""）',
+        code: 'empty_upstream_body',
+      },
+    }), { status: 502 }), 'img_test_empty'))
+    expect(message).toContain('本次不扣免费次数')
+    expect(message).toContain('调试编号：img_test_empty')
+  })
+
+  it('passes upstream timeout through without rewrite', async () => {
+    expect(normalizeApiErrorMessage('上游生图超过 240 秒仍未完成，请稍后重试或降低尺寸/质量。\n错误代码：upstream_timeout')).toBe('上游生图超过 240 秒仍未完成，请稍后重试或降低尺寸/质量。\n错误代码：upstream_timeout')
+
+    const message = await getApiErrorMessage(new Response(JSON.stringify({
+      error: {
+        message: '上游生图超过 240 秒仍未完成，请稍后重试或降低尺寸/质量。',
+        code: 'upstream_timeout',
+      },
+    }), { status: 504 }))
+    expect(message).toBe('上游生图超过 240 秒仍未完成，请稍后重试或降低尺寸/质量。\n错误代码：upstream_timeout')
   })
 })
 
